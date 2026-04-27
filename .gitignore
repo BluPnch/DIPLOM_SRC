@@ -1,0 +1,5 @@
+get_photos_from_archive/
+dataset/
+runs/
+*.pt
+.idea/
