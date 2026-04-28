@@ -3,3 +3,5 @@ dataset/
 runs/
 *.pt
 .idea/
+yolo_env/
+*.jpg
