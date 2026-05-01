@@ -8,7 +8,7 @@ labelme--------- -
 
 
 python3.10 -m venv yolo_env
-yolo_env\Scripts\activate
+source yolo_env/bin/activate
 pip install ultralytics torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
 
