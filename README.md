@@ -7,8 +7,10 @@ dataset - датасет
 labelme--------- - 
 
 
-python3.10 -m venv yolo_env
+python3 -m venv yolo_env
 source yolo_env/bin/activate
 pip install ultralytics torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
 
+Запуск предсказаний:
+python -m streamlit run predict.py

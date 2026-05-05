@@ -1,311 +1,232 @@
-import gradio as gr
+import streamlit as st
 from ultralytics import YOLO
+import cv2
 import tempfile
+from PIL import Image
 import os
 from pathlib import Path
-import cv2
-import shutil
 
-# Загружаем модель (один раз при старте)
-model = YOLO("runs/detect/train/weights/best.pt")
+st.set_page_config(page_title="Детектор слизней", layout="wide")
+st.title("🐌 Детектор слизней на изображениях")
 
-class ImageProcessor:
-    def __init__(self):
-        self.original_images = []      # хранит пути к оригинальным файлам
-        self.annotated_images = []     # хранит пути к размеченным файлам
-        self.image_names = []          # имена файлов
-        self.counts = []               # количество слизней на каждом
+# Путь к вашей обученной модели
+MODEL_PATH = "runs/detect/train/weights/best.pt"
+
+# Загрузка модели
+@st.cache_resource
+def load_model():
+    if os.path.exists(MODEL_PATH):
+        st.success(f"✅ Загружена модель, обученная на слизнях")
+        return YOLO(MODEL_PATH)
+    else:
+        st.warning(f"⚠️ Модель не найдена по пути {MODEL_PATH}")
+        st.info("🔄 Использую предобученную модель yolo11n.pt (может находить не только слизней)")
+        return YOLO("yolo11n.pt")
+
+model = load_model()
+
+# Инициализация состояния сессии
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0
+if 'image_paths' not in st.session_state:
+    st.session_state.image_paths = []
+if 'annotated_paths' not in st.session_state:
+    st.session_state.annotated_paths = []
+if 'counts' not in st.session_state:
+    st.session_state.counts = []
+if 'filenames' not in st.session_state:
+    st.session_state.filenames = []
+
+def process_images(image_paths):
+    """Обрабатывает изображения и сохраняет результаты"""
+    st.session_state.image_paths = []
+    st.session_state.annotated_paths = []
+    st.session_state.counts = []
+    st.session_state.filenames = []
+    st.session_state.current_index = 0
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, img_path in enumerate(image_paths):
+        status_text.text(f"Обработка {i+1}/{len(image_paths)}: {Path(img_path).name}")
         
-    def process_folder(self, folder_path):
-        """Обрабатывает все изображения в папке"""
-        self.clear()
+        st.session_state.image_paths.append(img_path)
+        st.session_state.filenames.append(Path(img_path).name)
         
-        # Поддерживаемые форматы
-        extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+        # Предсказание
+        results = model.predict(source=img_path, conf=0.25, device='cpu', verbose=False)
         
-        # Собираем все изображения в папке
-        image_files = []
-        for ext in extensions:
-            image_files.extend(Path(folder_path).glob(f"*{ext}"))
-            image_files.extend(Path(folder_path).glob(f"*{ext.upper()}"))
-        
-        if not image_files:
-            return [], [], [], "❌ В выбранной папке нет изображений"
-        
-        # Обрабатываем каждое изображение
-        for img_path in sorted(image_files):
-            # Оригинал
-            self.original_images.append(str(img_path))
-            self.image_names.append(img_path.name)
+        for r in results:
+            annotated = r.plot()
+            fd, temp_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            cv2.imwrite(temp_path, annotated)
+            st.session_state.annotated_paths.append(temp_path)
             
-            # Предсказание
-            results = model.predict(source=str(img_path), conf=0.25, save=False)
-            
-            for r in results:
-                annotated = r.plot()  # BGR
-                
-                # Сохраняем во временный файл
-                fd, temp_path = tempfile.mkstemp(suffix=".jpg")
-                os.close(fd)
-                cv2.imwrite(temp_path, annotated)
-                self.annotated_images.append(temp_path)
-                
-                # Количество слизней
-                num = len(r.boxes) if r.boxes is not None else 0
-                self.counts.append(num)
+            # Количество найденных объектов
+            num = len(r.boxes) if r.boxes is not None else 0
+            st.session_state.counts.append(num)
         
-        return self.original_images, self.annotated_images, self.counts, f"✅ Обработано {len(self.original_images)} изображений"
+        progress_bar.progress((i + 1) / len(image_paths))
     
-    def process_files(self, file_paths):
-        """Обрабатывает выбранные файлы (список путей)"""
-        self.clear()
-        
-        if not file_paths:
-            return [], [], [], "❌ Не выбрано ни одного файла"
-        
-        for file_path in file_paths:
-            # Получаем оригинальный путь (Gradio передаёт объект с атрибутом 'name')
-            if hasattr(file_path, 'name'):
-                img_path = file_path.name
-            else:
-                img_path = str(file_path)
-            
-            self.original_images.append(img_path)
-            self.image_names.append(Path(img_path).name)
-            
-            # Предсказание
-            results = model.predict(source=img_path, conf=0.25, save=False)
-            
-            for r in results:
-                annotated = r.plot()
-                fd, temp_path = tempfile.mkstemp(suffix=".jpg")
-                os.close(fd)
-                cv2.imwrite(temp_path, annotated)
-                self.annotated_images.append(temp_path)
-                
-                num = len(r.boxes) if r.boxes is not None else 0
-                self.counts.append(num)
-        
-        return self.original_images, self.annotated_images, self.counts, f"✅ Обработано {len(self.original_images)} изображений"
-    
-    def clear(self):
-        """Очищает временные файлы и списки"""
-        # Удаляем временные размеченные файлы
-        for path in self.annotated_images:
-            try:
-                os.unlink(path)
-            except:
-                pass
-        self.original_images = []
-        self.annotated_images = []
-        self.image_names = []
-        self.counts = []
-    
-    def get_current_pair(self, index):
-        """Возвращает пару (оригинал, разметка) по индексу"""
-        if 0 <= index < len(self.original_images):
-            return self.original_images[index], self.annotated_images[index], self.counts[index], self.image_names[index]
-        return None, None, 0, ""
+    status_text.text(f"✅ Обработано {len(image_paths)} изображений")
+    return len(image_paths) > 0
 
-# Глобальный экземпляр процессора
-processor = ImageProcessor()
-
-# Состояние для навигации
-current_index_state = gr.State(0)
-total_count_state = gr.State(0)
-
-def load_folder(folder_path):
-    """Загружает и обрабатывает папку"""
-    if not folder_path:
-        return [], [], 0, 0, "❌ Выберите папку", gr.update(visible=False), gr.update(visible=False)
+def load_from_folder(folder_path):
+    """Загружает все изображения из папки"""
+    extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+    image_files = []
     
-    orig, annot, counts, msg = processor.process_folder(folder_path)
-    total = len(orig)
+    for ext in extensions:
+        image_files.extend(Path(folder_path).glob(f"*{ext}"))
+        image_files.extend(Path(folder_path).glob(f"*{ext.upper()}"))
     
-    if total == 0:
-        return [], [], 0, 0, msg, gr.update(visible=False), gr.update(visible=False)
+    image_files = sorted(image_files)
     
-    # Возвращаем первое изображение для отображения
-    if orig:
-        return (
-            orig[0] if orig else None,
-            annot[0] if annot else None,
-            counts[0] if counts else 0,
-            total,
-            msg,
-            gr.update(visible=True, value=1),
-            gr.update(visible=True)
-        )
-    return None, None, 0, 0, msg, gr.update(visible=False), gr.update(visible=False)
+    if not image_files:
+        st.error(f"❌ В папке {folder_path} нет изображений")
+        return False
+    
+    return process_images([str(f) for f in image_files])
 
-def load_files(files):
-    """Загружает и обрабатывает выбранные файлы"""
+def load_from_files(files):
+    """Загружает выбранные файлы"""
     if not files:
-        return [], [], 0, 0, "❌ Выберите файлы", gr.update(visible=False), gr.update(visible=False)
+        return False
     
-    orig, annot, counts, msg = processor.process_files(files)
-    total = len(orig)
+    temp_dir = tempfile.mkdtemp()
+    image_paths = []
     
-    if total == 0:
-        return [], [], 0, 0, msg, gr.update(visible=False), gr.update(visible=False)
+    for file in files:
+        img_path = os.path.join(temp_dir, file.name)
+        with open(img_path, 'wb') as f:
+            f.write(file.getbuffer())
+        image_paths.append(img_path)
     
-    if orig:
-        return (
-            orig[0],
-            annot[0],
-            counts[0],
-            total,
-            msg,
-            gr.update(visible=True, value=1),
-            gr.update(visible=True)
-        )
-    return None, None, 0, 0, msg, gr.update(visible=False), gr.update(visible=False)
+    return process_images(image_paths)
 
-def next_image(current_idx, total):
-    """Переход к следующему изображению"""
-    new_idx = current_idx + 1
-    if new_idx >= total:
-        new_idx = 0  # зацикливание
-    
-    orig = processor.original_images[new_idx] if new_idx < len(processor.original_images) else None
-    annot = processor.annotated_images[new_idx] if new_idx < len(processor.annotated_images) else None
-    count = processor.counts[new_idx] if new_idx < len(processor.counts) else 0
-    
-    return orig, annot, count, new_idx + 1, new_idx
+def next_image():
+    if st.session_state.current_index < len(st.session_state.image_paths) - 1:
+        st.session_state.current_index += 1
 
-def prev_image(current_idx, total):
-    """Переход к предыдущему изображению"""
-    new_idx = current_idx - 1
-    if new_idx < 0:
-        new_idx = total - 1
-    
-    orig = processor.original_images[new_idx] if new_idx < len(processor.original_images) else None
-    annot = processor.annotated_images[new_idx] if new_idx < len(processor.annotated_images) else None
-    count = processor.counts[new_idx] if new_idx < len(processor.counts) else 0
-    
-    return orig, annot, count, new_idx + 1, new_idx
+def prev_image():
+    if st.session_state.current_index > 0:
+        st.session_state.current_index -= 1
 
-# Создаём интерфейс Gradio
-with gr.Blocks(title="YOLO Детектор слизней", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🐌 Детектор слизней на изображениях")
-    gr.Markdown("Выберите **папку** с изображениями или **отдельные файлы**, затем нажмите **Загрузить и детектировать**")
+# Боковая панель
+with st.sidebar:
+    st.header("📂 Загрузка изображений")
     
-    with gr.Row():
-        # Левая колонка: выбор источника
-        with gr.Column(scale=1):
-            gr.Markdown("### 📂 Источник изображений")
-            
-            folder_input = gr.Textbox(
-                label="Путь к папке",
-                placeholder="Например: C:/Users/User/images",
-                info="Укажите путь к папке с изображениями"
-            )
-            folder_btn = gr.Button("📁 Загрузить папку", variant="secondary")
-            
-            gr.Markdown("--- или ---")
-            
-            file_input = gr.File(
-                file_count="multiple",
-                label="Выберите файлы",
-                file_types=["image"]
-            )
-            file_btn = gr.Button("🖼️ Загрузить файлы", variant="secondary")
-        
-        # Правая колонка: статус
-        with gr.Column(scale=1):
-            status_text = gr.Textbox(label="Статус", interactive=False)
+    folder_path = st.text_input("Или укажите путь к папке:", placeholder="C:/путь/к/папке")
     
-    gr.Markdown("---")
-    gr.Markdown("### 🖱️ Результаты детекции")
+    if st.button("📁 Загрузить папку", type="primary"):
+        if folder_path and os.path.exists(folder_path):
+            with st.spinner("Загрузка и обработка..."):
+                if load_from_folder(folder_path):
+                    st.success(f"✅ Загружено {len(st.session_state.image_paths)} изображений")
+                else:
+                    st.error("❌ Не удалось загрузить изображения")
+        else:
+            st.error("❌ Укажите корректный путь к папке")
     
-    # Два столбца для изображений: исходное и размеченное
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("#### 📷 Исходное изображение")
-            original_image = gr.Image(label="Оригинал", type="filepath", height=400)
-            
-        with gr.Column(scale=1):
-            gr.Markdown("#### 🐍 Размеченное изображение")
-            annotated_image = gr.Image(label="Детекция", type="filepath", height=400)
+    st.markdown("---")
+    st.markdown("### Или выберите файлы")
     
-    # Счётчик и кнопки навигации
-    with gr.Row():
-        prev_btn = gr.Button("◀ Назад", variant="secondary", visible=False)
-        counter_text = gr.Markdown("**Изображение: 0 / 0**", visible=False)
-        next_btn = gr.Button("Вперёд ▶", variant="secondary", visible=False)
-    
-    with gr.Row():
-        slug_count = gr.Markdown("**🐌 Количество слизней:** --", visible=False)
-    
-    # Скрытые состояния
-    current_idx = gr.State(0)
-    total_images = gr.State(0)
-    
-    # Обработчики событий
-    folder_btn.click(
-        fn=load_folder,
-        inputs=[folder_input],
-        outputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn]
+    uploaded_files = st.file_uploader(
+        "Выберите изображения",
+        type=['jpg', 'jpeg', 'png'],
+        accept_multiple_files=True
     )
     
-    file_btn.click(
-        fn=load_files,
-        inputs=[file_input],
-        outputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn]
-    )
+    if st.button("🖼️ Загрузить файлы"):
+        if uploaded_files:
+            with st.spinner("Загрузка и обработка..."):
+                if load_from_files(uploaded_files):
+                    st.success(f"✅ Загружено {len(st.session_state.image_paths)} изображений")
+                else:
+                    st.error("❌ Не удалось загрузить изображения")
+        else:
+            st.error("❌ Выберите хотя бы один файл")
     
-    # Обновляем markdown со счётчиком и количеством
-    def update_display(orig, annot, count, idx, total):
-        # Обновляем slug_count
-        slug_md = f"**🐌 Количество слизней:** {count}" if count is not None else "**🐌 Количество слизней:** --"
-        # Обновляем counter_text
-        counter_md = f"**Изображение:** {idx} / {total}" if total > 0 else "**Изображение:** 0 / 0"
-        return orig, annot, slug_md, counter_md
+    st.markdown("---")
     
-    # Функция для next с обновлением дисплея
-    def next_with_update(current_idx, total):
-        orig, annot, count, new_idx_display, new_idx = next_image(current_idx, total)
-        slug_md = f"**🐌 Количество слизней:** {count}" if count is not None else "**🐌 Количество слизней:** --"
-        counter_md = f"**Изображение:** {new_idx_display} / {total}" if total > 0 else "**Изображение:** 0 / 0"
-        return orig, annot, slug_md, counter_md, new_idx
-    
-    def prev_with_update(current_idx, total):
-        orig, annot, count, new_idx_display, new_idx = prev_image(current_idx, total)
-        slug_md = f"**🐌 Количество слизней:** {count}" if count is not None else "**🐌 Количество слизней:** --"
-        counter_md = f"**Изображение:** {new_idx_display} / {total}" if total > 0 else "**Изображение:** 0 / 0"
-        return orig, annot, slug_md, counter_md, new_idx
-    
-    # Привязываем навигацию
-    next_btn.click(
-        fn=next_with_update,
-        inputs=[current_idx, total_images],
-        outputs=[original_image, annotated_image, slug_count, counter_text, current_idx]
-    )
-    
-    prev_btn.click(
-        fn=prev_with_update,
-        inputs=[current_idx, total_images],
-        outputs=[original_image, annotated_image, slug_count, counter_text, current_idx]
-    )
-    
-    # При загрузке данных обновляем current_idx и total_images
-    def on_load(orig, annot, count, total, msg, counter, prev, nxt):
-        # Возвращаем всё то же самое, плюс устанавливаем current_idx = 0, total_images = total
-        return orig, annot, count, total, msg, counter, prev, nxt, 0, total
-    
-    folder_btn.click(
-        fn=on_load,
-        inputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn],
-        outputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn, current_idx, total_images]
-    )
-    
-    file_btn.click(
-        fn=on_load,
-        inputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn],
-        outputs=[original_image, annotated_image, slug_count, total_images, status_text, counter_text, prev_btn, next_btn, current_idx, total_images]
-    )
-    
-    gr.Markdown("---\n💡 **Совет:** Для изменения порога уверенности отредактируйте параметр `conf=0.25` в коде")
+    if st.session_state.image_paths:
+        st.markdown(f"### 📊 Статистика")
+        st.markdown(f"**Всего изображений:** {len(st.session_state.image_paths)}")
+        st.markdown(f"**Всего слизней:** {sum(st.session_state.counts)}")
+        st.markdown(f"**Текущее:** {st.session_state.current_index + 1} / {len(st.session_state.image_paths)}")
 
-if __name__ == "__main__":
-    demo.launch(inbrowser=True)
+# Основная область
+# Основная область
+if st.session_state.image_paths:
+    idx = st.session_state.current_index
+    
+    # Инициализация масштаба
+    if 'image_scale' not in st.session_state:
+        st.session_state.image_scale = 1.0
+    
+    # Кнопки навигации и масштаба
+    col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1, 1, 1, 2, 1, 1, 1, 1])
+    with col1:
+        if st.button("⏮️ В начало", use_container_width=True):
+            st.session_state.current_index = 0
+            st.rerun()
+    with col2:
+        if st.button("◀ Назад", use_container_width=True):
+            prev_image()
+            st.rerun()
+    with col3:
+        if st.button("🔍 -", use_container_width=True):
+            st.session_state.image_scale = max(0.3, st.session_state.image_scale - 0.1)
+            st.rerun()
+    with col6:
+        if st.button("🔍 +", use_container_width=True):
+            st.session_state.image_scale = min(2.0, st.session_state.image_scale + 0.1)
+            st.rerun()
+    with col7:
+        if st.button("Вперёд ▶", use_container_width=True):
+            next_image()
+            st.rerun()
+    with col8:
+        if st.button("⏭️ В конец", use_container_width=True):
+            st.session_state.current_index = len(st.session_state.image_paths) - 1
+            st.rerun()
+    
+    # Отображаем текущий масштаб
+    st.caption(f"🔍 Масштаб: {st.session_state.image_scale:.1f}x")
+    
+    st.progress((idx + 1) / len(st.session_state.image_paths))
+    
+    # Функция для изменения размера изображения с сохранением пропорций
+    def resize_image(image_path, scale):
+        img = Image.open(image_path)
+        new_width = int(img.width * scale)
+        new_height = int(img.height * scale)
+        return img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown(f"### 📷 Исходное изображение")
+        try:
+            resized_img = resize_image(st.session_state.image_paths[idx], st.session_state.image_scale)
+            st.image(resized_img, use_container_width=False)
+        except Exception as e:
+            st.image(st.session_state.image_paths[idx], use_container_width=True)
+    
+    with col_right:
+        st.markdown(f"### 🐍 Результат детекции")
+        try:
+            resized_annot = resize_image(st.session_state.annotated_paths[idx], st.session_state.image_scale)
+            st.image(resized_annot, use_container_width=False)
+        except Exception as e:
+            st.image(st.session_state.annotated_paths[idx], use_container_width=True)
+    
+    st.markdown("---")
+    st.markdown(f"## 🐌 Количество слизней: **{st.session_state.counts[idx]}**")
+    st.markdown("---")
+    st.markdown(f"**📄 {st.session_state.filenames[idx]}** ({idx + 1} / {len(st.session_state.image_paths)})")
+    
+else:
+    st.info("👈 Выберите папку или загрузите файлы в боковой панели")
