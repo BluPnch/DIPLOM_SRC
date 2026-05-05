@@ -2,7 +2,7 @@ from ultralytics import YOLO
 
 if __name__ == '__main__':
     # Загружаем чистую предобученную модель (без ваших предыдущих дообучений)
-    model = YOLO("yolo11n.pt")
+    model = YOLO("yolo26n.pt")
 
     # Запускаем обучение с оптимизированными параметрами
     model.train(
