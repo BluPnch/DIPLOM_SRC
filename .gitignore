@@ -1,6 +1,8 @@
 get_photos_from_archive/
 dataset/
 runs/
+detectors/faster_rcnn/coco_dataset/
+detectors/faster_rcnn/*.pth
 *.pt
 .idea/
 yolo_env/
