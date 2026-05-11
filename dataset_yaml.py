@@ -11,6 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 DATA_YAML_CANDIDATES = [
     REPO_ROOT / "dataset" / "data.yaml",
     REPO_ROOT / "detectors" / "yolo" / "dataset" / "data.yaml",
+    REPO_ROOT / "detectors" / "yolo26" / "dataset" / "data.yaml",
+    REPO_ROOT / "detectors" / "yolo12" / "dataset" / "data.yaml", 
+    REPO_ROOT / "detectors" / "yolo11" / "dataset" / "data.yaml",  
 ]
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
