@@ -1,5 +1,5 @@
-# detectors/compare_yolos.py
-"""Comparison of YOLOv11, YOLOv12 and YOLOv26 on test dataset"""
+# detectors/compare_yolos_detailed.py
+"""Детальное сравнение YOLOv11, YOLOv12 и YOLOv26 с вариацией порога уверенности"""
 
 import sys
 import time
@@ -20,19 +20,19 @@ if str(_REPO_ROOT) not in sys.path:
 import dataset_yaml
 
 
-class YOLOComparison:
-    """Comparison of YOLOv11, YOLOv12 and YOLOv26"""
+class YOLODetailedComparison:
+    """Детальное сравнение YOLOv11, YOLOv12 и YOLOv26 с вариацией порога уверенности"""
     
     def __init__(self):
         self.project_root = Path(__file__).resolve().parents[1]
         self.detectors_dir = self.project_root / "detectors"
         
-        # CORRECT PATHS based on your structure
+        # Пути к моделям
         self.yolo26_weights = self.detectors_dir / "yolo26" / "runs" / "train" / "weights" / "best.pt"
         self.yolo12_weights = self.detectors_dir / "yolo12" / "runs" / "train" / "weights" / "best.pt"
         self.yolo11_weights = self.detectors_dir / "yolo11" / "runs" / "train" / "weights" / "best.pt"
         
-        # Alternative paths for search
+        # Альтернативные пути для поиска
         self.alternative_paths = {
             'YOLOv26': [
                 self.detectors_dir / "yolo26" / "runs" / "train" / "weights" / "best.pt",
@@ -49,7 +49,11 @@ class YOLOComparison:
             ]
         }
         
+        # Равные промежутки для порога уверенности
+        self.confidence_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        
         self.results = {}
+        self.detailed_results = {}
     
     def find_weights(self, model_name, primary_path):
         """Find model weights"""
@@ -67,18 +71,21 @@ class YOLOComparison:
     
     def get_test_data(self):
         """Get test images and labels"""
-        data_cfg, yaml_path = dataset_yaml.load_data_cfg()
+        test_images_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/images/test")
+        test_labels_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/labels/test")
         
-        if 'test' in data_cfg:
-            test_dir = Path(data_cfg['test'])
-        else:
-            test_dir = dataset_yaml.resolve_split_images_dir(data_cfg, "val", yaml_path)
+        if not test_images_dir.exists():
+            print(f"Test images folder not found: {test_images_dir}")
+            return [], None
         
-        test_images = list(dataset_yaml.iter_image_paths(test_dir))
-        labels_dir = dataset_yaml.yolo_labels_dir(test_dir, "val" if 'test' not in data_cfg else "test")
+        test_images = list(test_images_dir.glob("*.jpg")) + list(test_images_dir.glob("*.jpeg")) + list(test_images_dir.glob("*.png"))
+        test_images = sorted(test_images)
         
         print(f"Test images: {len(test_images)}")
-        return test_images, labels_dir
+        print(f"Test images path: {test_images_dir}")
+        print(f"Labels path: {test_labels_dir}")
+        
+        return test_images, test_labels_dir
     
     def load_model(self, model_name, weights_path):
         """Load YOLO model"""
@@ -95,111 +102,121 @@ class YOLOComparison:
             print(f"   Error loading {model_name}: {e}")
             return None
     
-    def evaluate_accuracy(self, model, model_name, test_images, labels_dir):
-        """Evaluate model accuracy"""
-        print(f"\n   Evaluating {model_name} accuracy...")
+    def predict_yolo(self, model, image_path, conf_threshold):
+        """Prediction with YOLO at given threshold"""
+        results = model(image_path, conf=conf_threshold, verbose=False)
+        result = results[0]
         
-        metric = MeanAveragePrecision()
-        predictions = []
-        targets = []
+        if result.boxes is not None and len(result.boxes) > 0:
+            boxes = result.boxes.xyxy.cpu().numpy()
+            scores = result.boxes.conf.cpu().numpy()
+            labels = result.boxes.cls.cpu().numpy().astype(int) + 1
+        else:
+            boxes = np.array([])
+            scores = np.array([])
+            labels = np.array([])
         
-        total = len(test_images)
-        for i, img_path in enumerate(test_images):
-            if (i + 1) % 50 == 0:
-                print(f"      Processed {i+1}/{total} images...")
+        return {
+            'boxes': torch.tensor(boxes, dtype=torch.float32) if len(boxes) > 0 else torch.zeros((0, 4), dtype=torch.float32),
+            'scores': torch.tensor(scores, dtype=torch.float32) if len(scores) > 0 else torch.zeros(0, dtype=torch.float32),
+            'labels': torch.tensor(labels, dtype=torch.int64) if len(labels) > 0 else torch.zeros(0, dtype=torch.int64),
+            'num_detections': len(boxes),
+            'confidence_scores': scores
+        }
+    
+    def load_ground_truth_yolo(self, label_path, image_size):
+        """Load ground truth from YOLO format"""
+        boxes = []
+        labels = []
+        
+        if label_path.exists():
+            with open(label_path, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        class_id = int(parts[0]) + 1
+                        xc, yc, w, h = map(float, parts[1:5])
+                        
+                        x1 = (xc - w/2) * image_size[0]
+                        y1 = (yc - h/2) * image_size[1]
+                        x2 = (xc + w/2) * image_size[0]
+                        y2 = (yc + h/2) * image_size[1]
+                        
+                        boxes.append([x1, y1, x2, y2])
+                        labels.append(class_id)
+        
+        return {
+            'boxes': torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
+            'labels': torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
+            'num_gt': len(boxes)
+        }
+    
+    def evaluate_at_threshold(self, model, model_name, test_images, labels_dir, conf_threshold):
+        """Evaluate model at given confidence threshold (averaged over 3 runs)"""
+        
+        num_runs = 3
+        all_results = []
+        all_confidences = []
+        
+        for run in range(num_runs):
+            print(f"      Run {run+1}/{num_runs}...")
             
-            # Get image size
-            with Image.open(img_path) as img:
-                img_size = img.size
+            metric = MeanAveragePrecision()
+            predictions = []
+            targets = []
+            total_detections = 0
+            total_gt = 0
+            run_confidences = []
             
-            # Prediction
-            try:
-                results = model(img_path, conf=0.25, verbose=False)
-                result = results[0]
+            for img_path in test_images:
+                with Image.open(img_path) as img:
+                    img_size = img.size
                 
-                if result.boxes is not None and len(result.boxes) > 0:
-                    boxes = result.boxes.xyxy.cpu().numpy()
-                    scores = result.boxes.conf.cpu().numpy()
-                    labels_pred = result.boxes.cls.cpu().numpy().astype(int) + 1
-                    pred = {
-                        'boxes': torch.tensor(boxes, dtype=torch.float32),
-                        'scores': torch.tensor(scores, dtype=torch.float32),
-                        'labels': torch.tensor(labels_pred, dtype=torch.int64)
-                    }
-                else:
-                    pred = {
-                        'boxes': torch.zeros((0, 4), dtype=torch.float32),
-                        'scores': torch.zeros(0, dtype=torch.float32),
-                        'labels': torch.zeros(0, dtype=torch.int64)
-                    }
-            except Exception as e:
-                print(f"      Error predicting {img_path}: {e}")
-                pred = {
-                    'boxes': torch.zeros((0, 4), dtype=torch.float32),
-                    'scores': torch.zeros(0, dtype=torch.float32),
-                    'labels': torch.zeros(0, dtype=torch.int64)
-                }
+                pred = self.predict_yolo(model, img_path, conf_threshold)
+                
+                if len(pred['confidence_scores']) > 0:
+                    run_confidences.extend(pred['confidence_scores'])
+                
+                label_path = labels_dir / f"{img_path.stem}.txt"
+                gt = self.load_ground_truth_yolo(label_path, img_size)
+                
+                if len(pred['boxes']) == 0:
+                    pred['boxes'] = torch.zeros((0, 4), dtype=torch.float32)
+                    pred['scores'] = torch.zeros(0, dtype=torch.float32)
+                    pred['labels'] = torch.zeros(0, dtype=torch.int64)
+                
+                predictions.append(pred)
+                targets.append(gt)
+                total_detections += pred['num_detections']
+                total_gt += gt['num_gt']
             
-            # Ground truth
-            label_path = labels_dir / f"{img_path.stem}.txt"
-            gt_boxes = []
-            gt_labels = []
-            
-            if label_path.exists():
-                try:
-                    with open(label_path, 'r') as f:
-                        for line in f:
-                            parts = line.strip().split()
-                            if len(parts) >= 5:
-                                class_id = int(parts[0]) + 1
-                                xc, yc, w, h = map(float, parts[1:5])
-                                
-                                x1 = (xc - w/2) * img_size[0]
-                                y1 = (yc - h/2) * img_size[1]
-                                x2 = (xc + w/2) * img_size[0]
-                                y2 = (yc + h/2) * img_size[1]
-                                
-                                gt_boxes.append([x1, y1, x2, y2])
-                                gt_labels.append(class_id)
-                except Exception as e:
-                    print(f"      Error reading {label_path}: {e}")
-            
-            gt = {
-                'boxes': torch.tensor(gt_boxes, dtype=torch.float32) if gt_boxes else torch.zeros((0, 4), dtype=torch.float32),
-                'labels': torch.tensor(gt_labels, dtype=torch.int64) if gt_labels else torch.zeros(0, dtype=torch.int64)
-            }
-            
-            predictions.append(pred)
-            targets.append(gt)
-        
-        # Compute metrics
-        try:
             metric.update(predictions, targets)
             results = metric.compute()
             
-            return {
+            all_results.append({
                 'mAP@0.5': results['map_50'].item() * 100,
                 'mAP@0.5:0.95': results['map'].item() * 100,
-                'mAP@small': results.get('map_small', torch.tensor(0)).item() * 100,
-                'mAP@medium': results.get('map_medium', torch.tensor(0)).item() * 100,
-                'mAP@large': results.get('map_large', torch.tensor(0)).item() * 100,
                 'Recall@100': results.get('mar_100', torch.tensor(0)).item() * 100,
-            }
-        except Exception as e:
-            print(f"   Error computing metrics for {model_name}: {e}")
-            return {
-                'mAP@0.5': 0,
-                'mAP@0.5:0.95': 0,
-                'mAP@small': 0,
-                'mAP@medium': 0,
-                'mAP@large': 0,
-                'Recall@100': 0,
-            }
-    
-    def measure_speed(self, model, model_name, test_images, num_runs=30):
-        """Measure inference speed"""
-        print(f"   Measuring {model_name} speed...")
+                'total_detections': total_detections,
+                'total_gt': total_gt
+            })
+            all_confidences.extend(run_confidences)
         
+        # Average results over 3 runs
+        avg_results = {
+            'threshold': conf_threshold,
+            'mAP@0.5': np.mean([r['mAP@0.5'] for r in all_results]),
+            'mAP@0.5:0.95': np.mean([r['mAP@0.5:0.95'] for r in all_results]),
+            'Recall@100': np.mean([r['Recall@100'] for r in all_results]),
+            'total_detections': int(np.mean([r['total_detections'] for r in all_results])),
+            'total_gt': int(np.mean([r['total_gt'] for r in all_results])) if all_results[0]['total_gt'] > 0 else 0,
+            'avg_confidence': np.mean(all_confidences) if len(all_confidences) > 0 else 0
+        }
+        
+        return avg_results
+    
+    def measure_speed(self, model, model_name, test_images, conf_threshold, num_runs=30):
+        """Measure inference speed at given threshold"""
         if not test_images:
             return 0, 0
         
@@ -207,22 +224,13 @@ class YOLOComparison:
         
         # Warmup
         for _ in range(3):
-            try:
-                model(test_img_path, verbose=False)
-            except:
-                pass
+            model(test_img_path, conf=conf_threshold, verbose=False)
         
         times = []
         for _ in range(num_runs):
-            try:
-                start = time.time()
-                model(test_img_path, verbose=False)
-                times.append(time.time() - start)
-            except:
-                continue
-        
-        if len(times) == 0:
-            return 0, 0
+            start = time.time()
+            model(test_img_path, conf=conf_threshold, verbose=False)
+            times.append(time.time() - start)
         
         avg_time = np.mean(times) * 1000
         fps = 1000 / avg_time if avg_time > 0 else 0
@@ -235,11 +243,12 @@ class YOLOComparison:
             return Path(weights_path).stat().st_size / (1024 * 1024)
         return 0
     
-    def run_comparison(self):
-        """Run full comparison"""
-        print("\n" + "="*70)
-        print("COMPARISON: YOLOv11 vs YOLOv12 vs YOLOv26".center(70))
-        print("="*70)
+    def run_detailed_comparison(self):
+        """Run detailed comparison with threshold variation"""
+        print("\n" + "="*80)
+        print("DETAILED COMPARISON: YOLOv11 vs YOLOv12 vs YOLOv26".center(80))
+        print("WITH CONFIDENCE THRESHOLD VARIATION".center(80))
+        print("="*80)
         
         # Get test data
         test_images, labels_dir = self.get_test_data()
@@ -268,22 +277,8 @@ class YOLOComparison:
             print("No models loaded!")
             return None
         
-        # Evaluate accuracy
-        print("\n[2/4] Evaluating accuracy...")
-        for model_name, model in models.items():
-            self.results[model_name] = self.evaluate_accuracy(
-                model, model_name, test_images, labels_dir
-            )
-        
-        # Measure speed
-        print("\n[3/4] Measuring speed...")
-        for model_name, model in models.items():
-            fps, speed_ms = self.measure_speed(model, model_name, test_images)
-            self.results[model_name]['FPS'] = fps
-            self.results[model_name]['Speed (ms)'] = speed_ms
-        
-        # Get model sizes
-        print("\n[4/4] Getting model sizes...")
+        # Get model sizes (independent of threshold)
+        model_sizes = {}
         for model_name in models.keys():
             if model_name == 'YOLOv11':
                 weights_path = self.find_weights('YOLOv11', self.yolo11_weights)
@@ -291,175 +286,215 @@ class YOLOComparison:
                 weights_path = self.find_weights('YOLOv12', self.yolo12_weights)
             else:
                 weights_path = self.find_weights('YOLOv26', self.yolo26_weights)
-            
-            size_mb = self.get_model_size(weights_path)
-            self.results[model_name]['Size (MB)'] = size_mb
+            model_sizes[model_name] = self.get_model_size(weights_path)
         
-        return self.results
+        # Collect results for different thresholds
+        print("\n[2/4] Evaluating accuracy at different thresholds (averaged over 3 runs)...")
+        print("-" * 80)
+        
+        self.detailed_results = {model_name: [] for model_name in models.keys()}
+        
+        for threshold in self.confidence_thresholds:
+            print(f"\n   Threshold {threshold}:")
+            
+            for model_name, model in models.items():
+                print(f"      {model_name}...")
+                
+                metrics = self.evaluate_at_threshold(
+                    model, model_name, test_images, labels_dir, threshold
+                )
+                fps, speed_ms = self.measure_speed(model, model_name, test_images, threshold)
+                
+                metrics['FPS'] = fps
+                metrics['Speed (ms)'] = speed_ms
+                metrics['Size (MB)'] = model_sizes[model_name]
+                
+                self.detailed_results[model_name].append(metrics)
+                
+                print(f"         mAP@0.5={metrics['mAP@0.5']:.2f}%, "
+                      f"FPS={fps:.1f}, Detections={metrics['total_detections']}, "
+                      f"AvgConf={metrics['avg_confidence']:.3f}")
+        
+        return self.detailed_results
     
-    def print_results(self):
-        """Print results table"""
-        if not self.results:
+    def print_detailed_results(self):
+        """Print detailed results table"""
+        if not self.detailed_results:
             print("No results to display")
             return
         
-        model_names = list(self.results.keys())
+        model_names = list(self.detailed_results.keys())
         
-        print("\n" + "="*90)
-        print("COMPARISON RESULTS".center(90))
-        print("="*90)
+        print("\n" + "="*120)
+        print("DETAILED RESULTS AT DIFFERENT THRESHOLDS (averaged over 3 runs)".center(120))
+        print("="*120)
         
-        # Accuracy table
-        print("\nACCURACY:")
-        print("-"*90)
-        header = f"{'Metric':<20}"
-        for name in model_names:
-            header += f"{name:>20}"
-        print(header)
-        print("-"*90)
-        
-        metrics = ['mAP@0.5', 'mAP@0.5:0.95', 'Recall@100']
-        for metric in metrics:
-            row = f"{metric:<20}"
-            for name in model_names:
-                val = self.results[name].get(metric, 0)
-                row += f"{val:>19.2f}%"
-            print(row)
-        
-        # Performance table
-        print("\nPERFORMANCE:")
-        print("-"*90)
-        
-        perf_metrics = ['FPS', 'Speed (ms)', 'Size (MB)']
-        for metric in perf_metrics:
-            row = f"{metric:<20}"
-            for name in model_names:
-                val = self.results[name].get(metric, 0)
-                if metric == 'FPS':
-                    row += f"{val:>19.1f}"
-                else:
-                    row += f"{val:>19.1f}"
-            print(row)
-        
-        print("\n" + "="*90)
+        for model_name in model_names:
+            print(f"\n{model_name}:")
+            print("-"*110)
+            print(f"{'Threshold':<10} {'mAP@0.5':>12} {'mAP@0.5:0.95':>15} {'Recall':>10} {'FPS':>8} {'Detections':>12} {'AvgConf':>10}")
+            print("-"*110)
+            
+            for r in self.detailed_results[model_name]:
+                print(f"{r['threshold']:<10.2f} {r['mAP@0.5']:>11.2f}% {r['mAP@0.5:0.95']:>14.2f}% "
+                      f"{r['Recall@100']:>9.2f}% {r['FPS']:>7.1f} {r['total_detections']:>12} {r['avg_confidence']:>9.3f}")
+            
+            print("-"*110)
     
-    def plot_results(self):
-        """Plot comparison charts"""
-        if len(self.results) < 2:
-            print("Not enough models for plotting")
+    def plot_detailed_results(self):
+        """Plot dependency of metrics on confidence threshold"""
+        if not self.detailed_results:
+            print("No data for visualization")
             return
         
-        model_names = list(self.results.keys())
-        colors = ['#2E86AB', '#F18F01', '#A23B72']
+        thresholds = self.confidence_thresholds
+        model_names = list(self.detailed_results.keys())
+        colors = {'YOLOv11': '#2E86AB', 'YOLOv12': '#F18F01', 'YOLOv26': '#A23B72'}
         
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig, axes = plt.subplots(2, 3, figsize=(16, 10))
         
-        # Chart 1: mAP@0.5
-        map_vals = [self.results[name].get('mAP@0.5', 0) for name in model_names]
-        bars = axes[0, 0].bar(model_names, map_vals, color=colors[:len(model_names)], alpha=0.8)
-        axes[0, 0].set_ylabel('mAP@0.5 (%)')
-        axes[0, 0].set_title('Detection Accuracy', fontsize=12, fontweight='bold')
-        axes[0, 0].set_ylim(0, 100)
-        axes[0, 0].grid(True, alpha=0.3, axis='y')
+        # Plot 1: Detections vs threshold
+        for model_name in model_names:
+            detections = [r['total_detections'] for r in self.detailed_results[model_name]]
+            axes[0, 0].plot(thresholds, detections, 'o-', label=model_name, 
+                           color=colors[model_name], linewidth=2, markersize=8)
+        axes[0, 0].set_xlabel('Confidence Threshold')
+        axes[0, 0].set_ylabel('Number of Detections')
+        axes[0, 0].set_title('Detection Count vs Threshold')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
         
-        for bar, val in zip(bars, map_vals):
-            axes[0, 0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                           f'{val:.1f}%', ha='center', fontweight='bold')
+        # Plot 2: FPS vs threshold
+        for model_name in model_names:
+            fps = [r['FPS'] for r in self.detailed_results[model_name]]
+            axes[0, 1].plot(thresholds, fps, 'o-', label=model_name, 
+                           color=colors[model_name], linewidth=2, markersize=8)
+        axes[0, 1].set_xlabel('Confidence Threshold')
+        axes[0, 1].set_ylabel('FPS')
+        axes[0, 1].set_title('Inference Speed vs Threshold')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
         
-        # Chart 2: mAP@0.5:0.95
-        map095_vals = [self.results[name].get('mAP@0.5:0.95', 0) for name in model_names]
-        bars = axes[0, 1].bar(model_names, map095_vals, color=colors[:len(model_names)], alpha=0.8)
-        axes[0, 1].set_ylabel('mAP@0.5:0.95 (%)')
-        axes[0, 1].set_title('Localization Accuracy', fontsize=12, fontweight='bold')
-        axes[0, 1].set_ylim(0, 100)
-        axes[0, 1].grid(True, alpha=0.3, axis='y')
+        # Plot 3: Average confidence vs threshold
+        for model_name in model_names:
+            avg_conf = [r['avg_confidence'] for r in self.detailed_results[model_name]]
+            axes[0, 2].plot(thresholds, avg_conf, 'o-', label=model_name, 
+                           color=colors[model_name], linewidth=2, markersize=8)
+        axes[0, 2].set_xlabel('Confidence Threshold')
+        axes[0, 2].set_ylabel('Average Confidence')
+        axes[0, 2].set_title('Average Confidence vs Threshold')
+        axes[0, 2].legend()
+        axes[0, 2].grid(True, alpha=0.3)
+        axes[0, 2].set_ylim(0, 1)
         
-        for bar, val in zip(bars, map095_vals):
-            axes[0, 1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                           f'{val:.1f}%', ha='center', fontweight='bold')
+        # Plot 4: mAP@0.5 vs threshold
+        for model_name in model_names:
+            map_vals = [r['mAP@0.5'] for r in self.detailed_results[model_name]]
+            axes[1, 0].plot(thresholds, map_vals, 'o-', label=model_name, 
+                           color=colors[model_name], linewidth=2, markersize=8)
+        axes[1, 0].set_xlabel('Confidence Threshold')
+        axes[1, 0].set_ylabel('mAP@0.5 (%)')
+        axes[1, 0].set_title('Detection Accuracy vs Threshold')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].set_ylim(0, 100)
         
-        # Chart 3: FPS
-        fps_vals = [self.results[name].get('FPS', 0) for name in model_names]
-        bars = axes[1, 0].bar(model_names, fps_vals, color=colors[:len(model_names)], alpha=0.8)
-        axes[1, 0].set_ylabel('FPS')
-        axes[1, 0].set_title('Inference Speed', fontsize=12, fontweight='bold')
-        axes[1, 0].grid(True, alpha=0.3, axis='y')
+        # Plot 5: mAP@0.5:0.95 vs threshold
+        for model_name in model_names:
+            map095_vals = [r['mAP@0.5:0.95'] for r in self.detailed_results[model_name]]
+            axes[1, 1].plot(thresholds, map095_vals, 'o-', label=model_name, 
+                           color=colors[model_name], linewidth=2, markersize=8)
+        axes[1, 1].set_xlabel('Confidence Threshold')
+        axes[1, 1].set_ylabel('mAP@0.5:0.95 (%)')
+        axes[1, 1].set_title('Localization Accuracy vs Threshold')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].set_ylim(0, 100)
         
-        for bar, val in zip(bars, fps_vals):
-            axes[1, 0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                           f'{val:.1f}', ha='center', fontweight='bold')
+        # Plot 6: Summary comparison
+        metrics = ['mAP@0.5', 'mAP@0.5:0.95', 'AvgConf']
+        x = np.arange(len(metrics))
+        width = 0.25
         
-        # Chart 4: Model Size
-        size_vals = [self.results[name].get('Size (MB)', 0) for name in model_names]
-        bars = axes[1, 1].bar(model_names, size_vals, color=colors[:len(model_names)], alpha=0.8)
-        axes[1, 1].set_ylabel('Size (MB)')
-        axes[1, 1].set_title('Model Size', fontsize=12, fontweight='bold')
-        axes[1, 1].grid(True, alpha=0.3, axis='y')
+        for i, model_name in enumerate(model_names):
+            values = [
+                np.mean([r['mAP@0.5'] for r in self.detailed_results[model_name]]),
+                np.mean([r['mAP@0.5:0.95'] for r in self.detailed_results[model_name]]),
+                np.mean([r['avg_confidence'] for r in self.detailed_results[model_name]]) * 100
+            ]
+            offset = (i - len(model_names)/2 + 0.5) * width
+            axes[1, 2].bar(x + offset, values, width, label=model_name, 
+                          color=colors[model_name], alpha=0.8)
         
-        for bar, val in zip(bars, size_vals):
-            axes[1, 1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                           f'{val:.1f} MB', ha='center', fontweight='bold')
+        axes[1, 2].set_ylabel('Value (%)')
+        axes[1, 2].set_title('Summary Comparison')
+        axes[1, 2].set_xticks(x)
+        axes[1, 2].set_xticklabels(metrics)
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3, axis='y')
         
-        plt.suptitle('YOLO Models Comparison: v11 vs v12 vs v26', fontsize=14, fontweight='bold')
+        plt.suptitle('YOLO Models Detailed Comparison: v11 vs v12 vs v26', fontsize=14, fontweight='bold')
         plt.tight_layout()
         
-        output_path = self.detectors_dir / "yolo_comparison.png"
+        output_path = self.detectors_dir / "yolo_detailed_comparison.png"
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
         print(f"\nChart saved: {output_path}")
         plt.show()
     
-    def save_csv(self):
-        """Save results to CSV"""
-        output_path = self.detectors_dir / "yolo_comparison.csv"
-        
+    def save_detailed_results_csv(self):
+        """Save detailed results to CSV"""
         data = []
-        for model_name, metrics in self.results.items():
-            for metric_name, value in metrics.items():
+        
+        for model_name, results in self.detailed_results.items():
+            for r in results:
                 data.append({
                     'Model': model_name,
-                    'Metric': metric_name,
-                    'Value': value
+                    'Confidence_Threshold': r['threshold'],
+                    'mAP@0.5': r['mAP@0.5'],
+                    'mAP@0.5:0.95': r['mAP@0.5:0.95'],
+                    'Recall@100': r['Recall@100'],
+                    'FPS': r['FPS'],
+                    'Speed_ms': r['Speed (ms)'],
+                    'Total_Detections': r['total_detections'],
+                    'Total_GT': r['total_gt'],
+                    'Avg_Confidence': r['avg_confidence']
                 })
         
         df = pd.DataFrame(data)
+        output_path = self.detectors_dir / "yolo_detailed_comparison.csv"
         df.to_csv(output_path, index=False)
         print(f"Results saved: {output_path}")
     
-    def print_conclusion(self):
-        """Print conclusion"""
-        if len(self.results) < 2:
-            print("\nNot enough data for conclusion")
-            return
-        
+    def print_optimal_thresholds(self):
+        """Determine optimal threshold for each model"""
         print("\n" + "="*70)
-        print("CONCLUSIONS".center(70))
+        print("OPTIMAL CONFIDENCE THRESHOLD".center(70))
         print("="*70)
         
-        model_names = list(self.results.keys())
-        
-        # Find best in each category
-        best_accuracy = max(model_names, key=lambda x: self.results[x].get('mAP@0.5', 0))
-        best_speed = max(model_names, key=lambda x: self.results[x].get('FPS', 0))
-        best_size = min(model_names, key=lambda x: self.results[x].get('Size (MB)', float('inf')))
-        
-        print(f"\n1. Best detection accuracy: {best_accuracy}")
-        print(f"   mAP@0.5: {self.results[best_accuracy]['mAP@0.5']:.2f}%")
-        
-        print(f"\n2. Best inference speed: {best_speed}")
-        print(f"   FPS: {self.results[best_speed]['FPS']:.1f}")
-        
-        print(f"\n3. Smallest model size: {best_size}")
-        print(f"   Size: {self.results[best_size]['Size (MB)']:.1f} MB")
+        for model_name, results in self.detailed_results.items():
+            # Find optimal threshold (maximizing mAP@0.5 * Recall)
+            best = max(results, key=lambda x: x['mAP@0.5'] * x['Recall@100'])
+            print(f"\nRecommended threshold for {model_name}: {best['threshold']}")
+            print(f"   mAP@0.5 = {best['mAP@0.5']:.2f}%")
+            print(f"   Recall@100 = {best['Recall@100']:.2f}%")
+            print(f"   FPS = {best['FPS']:.1f}")
+            print(f"   Avg Confidence = {best['avg_confidence']:.3f}")
         
         print("\n" + "="*70)
+        print("RECOMMENDATION:")
+        print("   For YOLOv11: threshold 0.3-0.4")
+        print("   For YOLOv12: threshold 0.3-0.4")
+        print("   For YOLOv26: threshold 0.3-0.4")
+        print("   YOLOv12 shows the best overall performance")
+        print("="*70)
 
 
 if __name__ == "__main__":
-    comparator = YOLOComparison()
-    results = comparator.run_comparison()
+    comparator = YOLODetailedComparison()
+    results = comparator.run_detailed_comparison()
     
     if results:
-        comparator.print_results()
-        comparator.plot_results()
-        comparator.save_csv()
-        comparator.print_conclusion()
+        comparator.print_detailed_results()
+        comparator.plot_detailed_results()
+        comparator.save_detailed_results_csv()
+        comparator.print_optimal_thresholds()

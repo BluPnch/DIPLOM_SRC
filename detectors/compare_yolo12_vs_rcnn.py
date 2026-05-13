@@ -1,5 +1,5 @@
 # detectors/compare_yolo12_vs_rcnn.py
-"""Сравнение YOLOv12 и Faster R-CNN на тестовом датасете"""
+"""Детальное сравнение YOLOv12 и Faster R-CNN на тестовой выборке с вариацией порога"""
 
 import sys
 import time
@@ -21,81 +21,77 @@ if str(_REPO_ROOT) not in sys.path:
 import dataset_yaml
 
 
-class YOLOv12_vs_FasterRCNN:
-    """Сравнение YOLOv12 и Faster R-CNN"""
+class DetailedModelComparator:
+    """Детальное сравнение YOLOv12 и Faster R-CNN с вариацией порога уверенности"""
     
     def __init__(self):
         self.project_root = Path(__file__).resolve().parents[1]
         self.detectors_dir = self.project_root / "detectors"
         
-        # ПУТИ ДЛЯ YOLOv12 (исправлено)
-        self.yolo12_weights = self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt"
+        # Пути к моделям
+        self.yolo12_weights = self.detectors_dir / "yolo12" / "runs" / "train" / "weights" / "best.pt"
         
-        # Альтернативные пути для YOLOv12
         self.yolo12_alternatives = [
-            self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
-            self.project_root / "runs" / "detect" / "train2" / "weights" / "best.pt",
-            self.project_root / "runs" / "detect" / "train3" / "weights" / "best.pt",
             self.detectors_dir / "yolo12" / "runs" / "train" / "weights" / "best.pt",
-            self.detectors_dir / "yolo" / "runs" / "train" / "weights" / "best.pt",
+            self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
         ]
         
-        # Путь для Faster R-CNN
         self.frcnn_weights = self.detectors_dir / "faster_rcnn" / "faster_rcnn_best.pth"
         
+        # Равные промежутки для порога уверенности
+        self.confidence_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        
+        # Для хранения информации о каждой детекции
+        self.detection_details = {
+            'YOLOv12': [],
+            'Faster R-CNN': []
+        }
+        
         self.results = {}
+        self.detailed_results = {}
     
     def find_yolo12_weights(self):
-        """Поиск весов YOLOv12"""
-        print("   Поиск весов YOLOv12...")
         for path in self.yolo12_alternatives:
             if path.exists():
-                print(f"   ✅ Найдены веса YOLOv12: {path}")
+                print(f"   Найдены веса YOLOv12: {path}")
                 return path
         return None
     
     def get_test_data(self):
         """Получение тестовых изображений и меток"""
-        data_cfg, yaml_path = dataset_yaml.load_data_cfg()
+        test_images_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/images/test")
+        test_labels_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/labels/test")
         
-        if 'test' in data_cfg:
-            test_dir = Path(data_cfg['test'])
-        else:
-            test_dir = dataset_yaml.resolve_split_images_dir(data_cfg, "val", yaml_path)
+        if not test_images_dir.exists():
+            print(f"Папка с тестовыми изображениями не найдена: {test_images_dir}")
+            return [], None
         
-        test_images = list(dataset_yaml.iter_image_paths(test_dir))
-        labels_dir = dataset_yaml.yolo_labels_dir(test_dir, "val" if 'test' not in data_cfg else "test")
+        test_images = list(test_images_dir.glob("*.jpg")) + list(test_images_dir.glob("*.jpeg")) + list(test_images_dir.glob("*.png"))
+        test_images = sorted(test_images)
         
-        print(f"📁 Тестовых изображений: {len(test_images)}")
-        return test_images, labels_dir
+        print(f"Тестовых изображений: {len(test_images)}")
+        print(f"Путь к тестовым изображениям: {test_images_dir}")
+        print(f"Путь к разметке: {test_labels_dir}")
+        
+        return test_images, test_labels_dir
     
     def load_models(self):
-        """Загрузка моделей YOLOv12 и Faster R-CNN"""
         print("\n[1/4] Загрузка моделей...")
         
         # YOLOv12
         yolo12_path = self.find_yolo12_weights()
         if yolo12_path is None:
-            raise FileNotFoundError(
-                f"❌ YOLOv12 веса не найдены.\n"
-                f"Искали в:\n" + "\n".join(f"  - {p}" for p in self.yolo12_alternatives)
-            )
+            raise FileNotFoundError("YOLOv12 веса не найдены")
         yolo12 = YOLO(str(yolo12_path))
-        print(f"   ✅ YOLOv12 загружена")
+        print(f"   YOLOv12 загружена")
         
         # Faster R-CNN
-        if not self.frcnn_weights.exists():
-            raise FileNotFoundError(
-                f"❌ Faster R-CNN веса не найдены: {self.frcnn_weights}\n"
-                f"Убедитесь, что модель обучена: python detectors/faster_rcnn/train_faster_rcnn_simple.py"
-            )
-        
         import torchvision
         from torchvision.models.detection import FasterRCNN
         from torchvision.models.detection.rpn import AnchorGenerator
         
-        backbone = torchvision.models.mobilenet_v2(weights="DEFAULT").features
-        backbone.out_channels = 1280
+        backbone = torchvision.models.mobilenet_v3_small(weights='DEFAULT').features
+        backbone.out_channels = 576
         
         anchor_generator = AnchorGenerator(
             sizes=((32, 64, 128, 256, 512),),
@@ -103,7 +99,7 @@ class YOLOv12_vs_FasterRCNN:
         )
         
         roi_pooler = torchvision.ops.MultiScaleRoIAlign(
-            featmap_names=["0"],
+            featmap_names=['0'],
             output_size=7,
             sampling_ratio=2,
         )
@@ -121,12 +117,11 @@ class YOLOv12_vs_FasterRCNN:
         faster_rcnn.load_state_dict(torch.load(str(self.frcnn_weights), map_location=device))
         faster_rcnn.eval()
         faster_rcnn.to(device)
-        print(f"   ✅ Faster R-CNN загружена")
+        print(f"   Faster R-CNN загружена")
         
         return yolo12, faster_rcnn
     
-    def predict_yolo12(self, model, image_path, conf_threshold=0.25):
-        """Предсказание YOLOv12"""
+    def predict_yolo12(self, model, image_path, conf_threshold):
         results = model(image_path, conf=conf_threshold, verbose=False)
         result = results[0]
         
@@ -142,11 +137,12 @@ class YOLOv12_vs_FasterRCNN:
         return {
             'boxes': torch.tensor(boxes) if len(boxes) > 0 else torch.zeros((0, 4)),
             'scores': torch.tensor(scores) if len(scores) > 0 else torch.zeros(0),
-            'labels': torch.tensor(labels) if len(labels) > 0 else torch.zeros(0, dtype=torch.int64)
+            'labels': torch.tensor(labels) if len(labels) > 0 else torch.zeros(0, dtype=torch.int64),
+            'num_detections': len(boxes),
+            'confidence_scores': scores
         }
     
-    def predict_faster_rcnn(self, model, image_path, conf_threshold=0.5):
-        """Предсказание Faster R-CNN"""
+    def predict_faster_rcnn(self, model, image_path, conf_threshold):
         image = Image.open(image_path).convert('RGB')
         original_size = image.size
         
@@ -176,11 +172,12 @@ class YOLOv12_vs_FasterRCNN:
         return {
             'boxes': boxes,
             'scores': scores,
-            'labels': labels
+            'labels': labels,
+            'num_detections': len(boxes),
+            'confidence_scores': scores.numpy() if len(scores) > 0 else np.array([])
         }
     
-    def load_ground_truth(self, label_path, image_size):
-        """Загрузка ground truth"""
+    def load_ground_truth_yolo(self, label_path, image_size):
         boxes = []
         labels = []
         
@@ -201,67 +198,90 @@ class YOLOv12_vs_FasterRCNN:
                         labels.append(class_id)
         
         return {
-            'boxes': torch.tensor(boxes) if boxes else torch.zeros((0, 4)),
-            'labels': torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64)
+            'boxes': torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
+            'labels': torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
+            'num_gt': len(boxes)
         }
     
-    def evaluate_accuracy(self, model, model_type, test_images, labels_dir):
-        """Оценка точности модели"""
-        print(f"\n[2/4] Оценка точности {model_type}...")
+    def evaluate_at_threshold(self, model, model_type, test_images, labels_dir, conf_threshold):
+        """Оценка модели при заданном пороге уверенности (с усреднением по 3 прогонам)"""
         
-        metric = MeanAveragePrecision()
-        predictions = []
-        targets = []
+        num_runs = 3
         
-        total = len(test_images)
-        for i, img_path in enumerate(test_images):
-            if (i + 1) % 50 == 0:
-                print(f"      Обработано {i+1}/{total} изображений...")
-            
-            with Image.open(img_path) as img:
-                img_size = img.size
-            
-            if model_type == 'YOLOv12':
-                pred = self.predict_yolo12(model, img_path)
-            else:
-                pred = self.predict_faster_rcnn(model, img_path)
-            
-            label_path = labels_dir / f"{img_path.stem}.txt"
-            gt = self.load_ground_truth(label_path, img_size)
-            
-            if len(pred['boxes']) == 0:
-                pred['boxes'] = torch.zeros((0, 4))
-                pred['scores'] = torch.zeros(0)
-                pred['labels'] = torch.zeros(0, dtype=torch.int64)
-            
-            predictions.append(pred)
-            targets.append(gt)
+        all_results = []
+        all_confidences = []
         
-        metric.update(predictions, targets)
-        results = metric.compute()
+        for run in range(num_runs):
+            print(f"      Прогон {run+1}/{num_runs}...")
+            
+            metric = MeanAveragePrecision()
+            predictions = []
+            targets = []
+            total_detections = 0
+            total_gt = 0
+            run_confidences = []
+            
+            for img_path in test_images:
+                with Image.open(img_path) as img:
+                    img_size = img.size
+                
+                if model_type == 'yolo':
+                    pred = self.predict_yolo12(model, img_path, conf_threshold)
+                else:
+                    pred = self.predict_faster_rcnn(model, img_path, conf_threshold)
+                
+                # Сохраняем уверенности для вычисления средней точности
+                if len(pred['confidence_scores']) > 0:
+                    run_confidences.extend(pred['confidence_scores'])
+                
+                label_path = labels_dir / f"{img_path.stem}.txt"
+                gt = self.load_ground_truth_yolo(label_path, img_size)
+                
+                if len(pred['boxes']) == 0:
+                    pred['boxes'] = torch.zeros((0, 4), dtype=torch.float32)
+                    pred['scores'] = torch.zeros(0, dtype=torch.float32)
+                    pred['labels'] = torch.zeros(0, dtype=torch.int64)
+                
+                predictions.append(pred)
+                targets.append(gt)
+                total_detections += pred['num_detections']
+                total_gt += gt['num_gt']
+            
+            metric.update(predictions, targets)
+            results = metric.compute()
+            
+            all_results.append({
+                'mAP@0.5': results['map_50'].item() * 100,
+                'mAP@0.5:0.95': results['map'].item() * 100,
+                'Recall@100': results.get('mar_100', torch.tensor(0)).item() * 100,
+                'total_detections': total_detections,
+                'total_gt': total_gt
+            })
+            all_confidences.extend(run_confidences)
         
-        return {
-            'mAP@0.5': results['map_50'].item() * 100,
-            'mAP@0.5:0.95': results['map'].item() * 100,
-            'mAP@small': results.get('map_small', torch.tensor(0)).item() * 100,
-            'mAP@medium': results.get('map_medium', torch.tensor(0)).item() * 100,
-            'mAP@large': results.get('map_large', torch.tensor(0)).item() * 100,
-            'Recall@100': results.get('mar_100', torch.tensor(0)).item() * 100,
+        # Усреднение результатов по 3 прогонам
+        avg_results = {
+            'threshold': conf_threshold,
+            'mAP@0.5': np.mean([r['mAP@0.5'] for r in all_results]),
+            'mAP@0.5:0.95': np.mean([r['mAP@0.5:0.95'] for r in all_results]),
+            'Recall@100': np.mean([r['Recall@100'] for r in all_results]),
+            'total_detections': int(np.mean([r['total_detections'] for r in all_results])),
+            'total_gt': int(np.mean([r['total_gt'] for r in all_results])) if all_results[0]['total_gt'] > 0 else 0,
+            'avg_confidence': np.mean(all_confidences) if len(all_confidences) > 0 else 0
         }
-    
-    def measure_speed(self, model, model_type, test_images, num_runs=50):
-        """Измерение скорости инференса"""
-        print(f"\n[3/4] Измерение скорости {model_type}...")
         
+        return avg_results
+    
+    def measure_speed_at_threshold(self, model, model_type, test_images, conf_threshold, num_runs=30):
         if not test_images:
             return 0, 0
         
         test_img_path = test_images[0]
         
         # Warmup
-        for _ in range(5):
-            if model_type == 'YOLOv12':
-                model(test_img_path, verbose=False)
+        for _ in range(3):
+            if model_type == 'yolo':
+                model(test_img_path, conf=conf_threshold, verbose=False)
             else:
                 image = Image.open(test_img_path).convert('RGB')
                 image = image.resize((640, 640))
@@ -275,8 +295,8 @@ class YOLOv12_vs_FasterRCNN:
         for _ in range(num_runs):
             start = time.time()
             
-            if model_type == 'YOLOv12':
-                model(test_img_path, verbose=False)
+            if model_type == 'yolo':
+                model(test_img_path, conf=conf_threshold, verbose=False)
             else:
                 image = Image.open(test_img_path).convert('RGB')
                 image = image.resize((640, 640))
@@ -294,215 +314,236 @@ class YOLOv12_vs_FasterRCNN:
         return fps, avg_time
     
     def get_model_size(self, model_path):
-        """Размер модели в MB"""
         if model_path and Path(model_path).exists():
             return Path(model_path).stat().st_size / (1024 * 1024)
         return 0
     
-    def run_comparison(self):
-        """Запуск полного сравнения"""
-        print("\n" + "="*70)
-        print("СРАВНЕНИЕ: YOLOv12 vs FASTER R-CNN".center(70))
-        print("="*70)
+    def run_detailed_comparison(self):
+        print("\n" + "="*80)
+        print("ДЕТАЛЬНОЕ СРАВНЕНИЕ: YOLOv12 vs FASTER R-CNN".center(80))
+        print("НА ТЕСТОВОЙ ВЫБОРКЕ".center(80))
+        print("="*80)
         
-        # Получение тестовых данных
         test_images, labels_dir = self.get_test_data()
         
         if len(test_images) == 0:
-            print("❌ Нет тестовых изображений!")
+            print("Нет тестовых изображений!")
             return None
         
-        # Загрузка моделей
         yolo12, faster_rcnn = self.load_models()
         
-        # Оценка точности
-        yolo12_metrics = self.evaluate_accuracy(yolo12, 'YOLOv12', test_images, labels_dir)
-        faster_metrics = self.evaluate_accuracy(faster_rcnn, 'Faster R-CNN', test_images, labels_dir)
-        
-        # Измерение скорости
-        yolo12_fps, yolo12_time = self.measure_speed(yolo12, 'YOLOv12', test_images)
-        faster_fps, faster_time = self.measure_speed(faster_rcnn, 'Faster R-CNN', test_images)
-        
-        # Размер моделей
         yolo12_path = self.find_yolo12_weights()
         yolo12_size = self.get_model_size(yolo12_path)
         faster_size = self.get_model_size(self.frcnn_weights)
         
-        # Формирование результатов
-        self.results = {
-            'YOLOv12': {
-                **yolo12_metrics,
-                'FPS': yolo12_fps,
-                'Speed (ms)': yolo12_time,
-                'Size (MB)': yolo12_size
-            },
-            'Faster R-CNN': {
-                **faster_metrics,
-                'FPS': faster_fps,
-                'Speed (ms)': faster_time,
-                'Size (MB)': faster_size
-            }
+        yolo_results = []
+        faster_results = []
+        
+        print("\n[2/4] Оценка точности при разных порогах (усреднение по 3 прогонам)...")
+        print("-" * 70)
+        
+        for threshold in self.confidence_thresholds:
+            print(f"\n   Порог {threshold}:")
+            
+            print(f"      YOLOv12...")
+            yolo_metrics = self.evaluate_at_threshold(
+                yolo12, 'yolo', test_images, labels_dir, threshold
+            )
+            yolo_fps, yolo_time = self.measure_speed_at_threshold(
+                yolo12, 'yolo', test_images, threshold
+            )
+            yolo_metrics['FPS'] = yolo_fps
+            yolo_metrics['Speed (ms)'] = yolo_time
+            yolo_metrics['Size (MB)'] = yolo12_size
+            yolo_results.append(yolo_metrics)
+            
+            print(f"      Faster R-CNN...")
+            faster_metrics = self.evaluate_at_threshold(
+                faster_rcnn, 'faster_rcnn', test_images, labels_dir, threshold
+            )
+            faster_fps, faster_time = self.measure_speed_at_threshold(
+                faster_rcnn, 'faster_rcnn', test_images, threshold
+            )
+            faster_metrics['FPS'] = faster_fps
+            faster_metrics['Speed (ms)'] = faster_time
+            faster_metrics['Size (MB)'] = faster_size
+            faster_results.append(faster_metrics)
+            
+            print(f"      YOLOv12: mAP@0.5={yolo_metrics['mAP@0.5']:.2f}%, "
+                  f"FPS={yolo_fps:.1f}, Детекций={yolo_metrics['total_detections']}, "
+                  f"Ср.уверенность={yolo_metrics['avg_confidence']:.3f}")
+            print(f"      Faster R-CNN: mAP@0.5={faster_metrics['mAP@0.5']:.2f}%, "
+                  f"FPS={faster_fps:.1f}, Детекций={faster_metrics['total_detections']}, "
+                  f"Ср.уверенность={faster_metrics['avg_confidence']:.3f}")
+        
+        self.detailed_results = {
+            'YOLOv12': yolo_results,
+            'Faster R-CNN': faster_results
         }
         
-        return self.results
+        return self.detailed_results
     
-    def print_results(self):
-        """Вывод результатов в виде таблицы"""
-        if not self.results:
-            print("❌ Нет результатов для отображения")
+    def print_detailed_results(self):
+        if not self.detailed_results:
+            print("Нет результатов для отображения")
             return
         
-        print("\n" + "="*80)
-        print("РЕЗУЛЬТАТЫ СРАВНЕНИЯ".center(80))
-        print("="*80)
+        print("\n" + "="*110)
+        print("РЕЗУЛЬТАТЫ НА ТЕСТОВОЙ ВЫБОРКЕ (усреднено по 3 прогонам)".center(110))
+        print("="*110)
         
-        # Таблица точности
-        print("\n📊 ТОЧНОСТЬ:")
-        print("-"*80)
-        print(f"{'Метрика':<25} {'YOLOv12':>20} {'Faster R-CNN':>20} {'Разница':>15}")
-        print("-"*80)
+        print("\nYOLOv12:")
+        print("-"*110)
+        print(f"{'Порог':<8} {'mAP@0.5':>12} {'mAP@0.5:0.95':>15} {'Recall':>10} {'FPS':>8} {'Детекции':>10} {'Ср.увер.':>10}")
+        print("-"*110)
         
-        metrics = ['mAP@0.5', 'mAP@0.5:0.95', 'Recall@100']
-        for metric in metrics:
-            yolo12_val = self.results['YOLOv12'][metric]
-            faster_val = self.results['Faster R-CNN'][metric]
-            diff = faster_val - yolo12_val
-            diff_str = f"+{diff:.2f}" if diff > 0 else f"{diff:.2f}"
-            print(f"{metric:<25} {yolo12_val:>19.2f}% {faster_val:>19.2f}% {diff_str:>15}")
+        for r in self.detailed_results['YOLOv12']:
+            print(f"{r['threshold']:<8.2f} {r['mAP@0.5']:>11.2f}% {r['mAP@0.5:0.95']:>14.2f}% "
+                  f"{r['Recall@100']:>9.2f}% {r['FPS']:>7.1f} {r['total_detections']:>10} {r['avg_confidence']:>9.3f}")
         
-        # Таблица производительности
-        print("\n⚡ СКОРОСТЬ И РАЗМЕР:")
-        print("-"*80)
-        print(f"{'Метрика':<25} {'YOLOv12':>20} {'Faster R-CNN':>20} {'Сравнение':>15}")
-        print("-"*80)
+        print("-"*110)
         
-        speedup = self.results['YOLOv12']['FPS'] / self.results['Faster R-CNN']['FPS']
-        size_ratio = self.results['Faster R-CNN']['Size (MB)'] / self.results['YOLOv12']['Size (MB)']
+        print("\nFaster R-CNN:")
+        print("-"*110)
+        print(f"{'Порог':<8} {'mAP@0.5':>12} {'mAP@0.5:0.95':>15} {'Recall':>10} {'FPS':>8} {'Детекции':>10} {'Ср.увер.':>10}")
+        print("-"*110)
         
-        print(f"{'FPS':<25} {self.results['YOLOv12']['FPS']:>19.1f} {self.results['Faster R-CNN']['FPS']:>19.1f} {'YOLO быстрее в ' + str(round(speedup, 1)) + 'x':>15}")
-        print(f"{'Время (ms)':<25} {self.results['YOLOv12']['Speed (ms)']:>19.1f} {self.results['Faster R-CNN']['Speed (ms)']:>19.1f} {'YOLO быстрее':>15}")
-        print(f"{'Размер (MB)':<25} {self.results['YOLOv12']['Size (MB)']:>19.1f} {self.results['Faster R-CNN']['Size (MB)']:>19.1f} {'YOLO меньше в ' + str(round(size_ratio, 1)) + 'x':>15}")
+        for r in self.detailed_results['Faster R-CNN']:
+            print(f"{r['threshold']:<8.2f} {r['mAP@0.5']:>11.2f}% {r['mAP@0.5:0.95']:>14.2f}% "
+                  f"{r['Recall@100']:>9.2f}% {r['FPS']:>7.1f} {r['total_detections']:>10} {r['avg_confidence']:>9.3f}")
         
-        print("\n" + "="*80)
+        print("-"*110)
     
-    def plot_results(self):
-        """Визуализация результатов"""
-        if not self.results:
-            print("❌ Нет данных для визуализации")
+    def plot_detailed_results(self):
+        if not self.detailed_results:
+            print("Нет данных для визуализации")
             return
         
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        thresholds = self.confidence_thresholds
         
-        models = ['YOLOv12', 'Faster R-CNN']
-        colors = ['#2E86AB', '#A23B72']
+        fig, axes = plt.subplots(2, 3, figsize=(16, 10))
         
-        # График 1: mAP@0.5
-        map_vals = [self.results[m]['mAP@0.5'] for m in models]
-        bars = axes[0].bar(models, map_vals, color=colors, alpha=0.8)
-        axes[0].set_ylabel('mAP@0.5 (%)')
-        axes[0].set_title('Точность детекции', fontsize=12, fontweight='bold')
-        axes[0].set_ylim(0, 100)
-        axes[0].grid(True, alpha=0.3, axis='y')
+        # График 1: Количество детекций
+        yolo_detections = [r['total_detections'] for r in self.detailed_results['YOLOv12']]
+        faster_detections = [r['total_detections'] for r in self.detailed_results['Faster R-CNN']]
         
-        for bar, val in zip(bars, map_vals):
-            axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                        f'{val:.1f}%', ha='center', fontweight='bold', fontsize=11)
+        axes[0, 0].plot(thresholds, yolo_detections, 'o-', label='YOLOv12', color='#2E86AB', linewidth=2, markersize=8)
+        axes[0, 0].plot(thresholds, faster_detections, 's-', label='Faster R-CNN', color='#A23B72', linewidth=2, markersize=8)
+        axes[0, 0].set_xlabel('Порог уверенности')
+        axes[0, 0].set_ylabel('Количество детекций')
+        axes[0, 0].set_title('Количество обнаруженных объектов')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
         
         # График 2: FPS
-        fps_vals = [self.results[m]['FPS'] for m in models]
-        bars = axes[1].bar(models, fps_vals, color=colors, alpha=0.8)
-        axes[1].set_ylabel('FPS (кадров/сек)')
-        axes[1].set_title('Скорость инференса', fontsize=12, fontweight='bold')
-        axes[1].grid(True, alpha=0.3, axis='y')
+        yolo_fps = [r['FPS'] for r in self.detailed_results['YOLOv12']]
+        faster_fps = [r['FPS'] for r in self.detailed_results['Faster R-CNN']]
         
-        for bar, val in zip(bars, fps_vals):
-            axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                        f'{val:.1f}', ha='center', fontweight='bold', fontsize=11)
+        axes[0, 1].plot(thresholds, yolo_fps, 'o-', label='YOLOv12', color='#2E86AB', linewidth=2, markersize=8)
+        axes[0, 1].plot(thresholds, faster_fps, 's-', label='Faster R-CNN', color='#A23B72', linewidth=2, markersize=8)
+        axes[0, 1].set_xlabel('Порог уверенности')
+        axes[0, 1].set_ylabel('FPS')
+        axes[0, 1].set_title('Скорость обработки')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
         
-        # График 3: Размер модели
-        size_vals = [self.results[m]['Size (MB)'] for m in models]
-        bars = axes[2].bar(models, size_vals, color=colors, alpha=0.8)
-        axes[2].set_ylabel('Размер (MB)')
-        axes[2].set_title('Компактность модели', fontsize=12, fontweight='bold')
-        axes[2].grid(True, alpha=0.3, axis='y')
+        # График 3: Средняя уверенность
+        yolo_avg_conf = [r['avg_confidence'] for r in self.detailed_results['YOLOv12']]
+        faster_avg_conf = [r['avg_confidence'] for r in self.detailed_results['Faster R-CNN']]
         
-        for bar, val in zip(bars, size_vals):
-            axes[2].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                        f'{val:.1f} MB', ha='center', fontweight='bold', fontsize=11)
+        axes[0, 2].plot(thresholds, yolo_avg_conf, 'o-', label='YOLOv12', color='#2E86AB', linewidth=2, markersize=8)
+        axes[0, 2].plot(thresholds, faster_avg_conf, 's-', label='Faster R-CNN', color='#A23B72', linewidth=2, markersize=8)
+        axes[0, 2].set_xlabel('Порог уверенности')
+        axes[0, 2].set_ylabel('Средняя уверенность')
+        axes[0, 2].set_title('Средняя уверенность модели')
+        axes[0, 2].legend()
+        axes[0, 2].grid(True, alpha=0.3)
+        axes[0, 2].set_ylim(0, 1)
         
-        plt.suptitle('Сравнение детекторов: YOLOv12 vs Faster R-CNN', fontsize=14, fontweight='bold')
+        # График 4: mAP@0.5
+        yolo_map = [r['mAP@0.5'] for r in self.detailed_results['YOLOv12']]
+        faster_map = [r['mAP@0.5'] for r in self.detailed_results['Faster R-CNN']]
+        
+        axes[1, 0].plot(thresholds, yolo_map, 'o-', label='YOLOv12', color='#2E86AB', linewidth=2, markersize=8)
+        axes[1, 0].plot(thresholds, faster_map, 's-', label='Faster R-CNN', color='#A23B72', linewidth=2, markersize=8)
+        axes[1, 0].set_xlabel('Порог уверенности')
+        axes[1, 0].set_ylabel('mAP@0.5 (%)')
+        axes[1, 0].set_title('Точность детекции (mAP@0.5)')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].set_ylim(0, 100)
+        
+        # График 5: mAP@0.5:0.95
+        yolo_map095 = [r['mAP@0.5:0.95'] for r in self.detailed_results['YOLOv12']]
+        faster_map095 = [r['mAP@0.5:0.95'] for r in self.detailed_results['Faster R-CNN']]
+        
+        axes[1, 1].plot(thresholds, yolo_map095, 'o-', label='YOLOv12', color='#2E86AB', linewidth=2, markersize=8)
+        axes[1, 1].plot(thresholds, faster_map095, 's-', label='Faster R-CNN', color='#A23B72', linewidth=2, markersize=8)
+        axes[1, 1].set_xlabel('Порог уверенности')
+        axes[1, 1].set_ylabel('mAP@0.5:0.95 (%)')
+        axes[1, 1].set_title('Точность локализации')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].set_ylim(0, 100)
+        
+        # График 6: Сравнение метрик
+        metrics = ['mAP@0.5', 'mAP@0.5:0.95', 'Ср.уверенность']
+        yolo_vals = [np.mean([r['mAP@0.5'] for r in self.detailed_results['YOLOv12']]),
+                     np.mean([r['mAP@0.5:0.95'] for r in self.detailed_results['YOLOv12']]),
+                     np.mean([r['avg_confidence'] for r in self.detailed_results['YOLOv12']]) * 100]
+        faster_vals = [np.mean([r['mAP@0.5'] for r in self.detailed_results['Faster R-CNN']]),
+                       np.mean([r['mAP@0.5:0.95'] for r in self.detailed_results['Faster R-CNN']]),
+                       np.mean([r['avg_confidence'] for r in self.detailed_results['Faster R-CNN']]) * 100]
+        
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        axes[1, 2].bar(x - width/2, yolo_vals, width, label='YOLOv12', color='#2E86AB', alpha=0.8)
+        axes[1, 2].bar(x + width/2, faster_vals, width, label='Faster R-CNN', color='#A23B72', alpha=0.8)
+        axes[1, 2].set_ylabel('Значение (%)')
+        axes[1, 2].set_title('Сводное сравнение')
+        axes[1, 2].set_xticks(x)
+        axes[1, 2].set_xticklabels(metrics)
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3, axis='y')
+        
+        plt.suptitle('Сравнение YOLOv12 и Faster R-CNN на тестовой выборке', fontsize=14, fontweight='bold')
         plt.tight_layout()
         
-        output_path = self.detectors_dir / "yolo12_vs_frcnn.png"
+        output_path = self.detectors_dir / "test_comparison.png"
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        print(f"\n📊 График сохранен: {output_path}")
+        print(f"\nГрафик сохранен: {output_path}")
         plt.show()
     
-    def save_csv(self):
-        """Сохранение результатов в CSV"""
-        output_path = self.detectors_dir / "yolo12_vs_frcnn.csv"
-        
+    def save_detailed_results_csv(self):
         data = []
-        for model_name, metrics in self.results.items():
-            for metric_name, value in metrics.items():
+        
+        for model_name, results in self.detailed_results.items():
+            for r in results:
                 data.append({
                     'Model': model_name,
-                    'Metric': metric_name,
-                    'Value': value
+                    'Confidence_Threshold': r['threshold'],
+                    'mAP@0.5': r['mAP@0.5'],
+                    'mAP@0.5:0.95': r['mAP@0.5:0.95'],
+                    'Recall@100': r['Recall@100'],
+                    'FPS': r['FPS'],
+                    'Speed_ms': r['Speed (ms)'],
+                    'Total_Detections': r['total_detections'],
+                    'Total_GT': r['total_gt'],
+                    'Avg_Confidence': r['avg_confidence']
                 })
         
         df = pd.DataFrame(data)
+        output_path = self.detectors_dir / "test_comparison.csv"
         df.to_csv(output_path, index=False)
-        print(f"📁 Результаты сохранены: {output_path}")
-    
-    def print_conclusion(self):
-        """Вывод заключения"""
-        print("\n" + "="*70)
-        print("ВЫВОДЫ".center(70))
-        print("="*70)
-        
-        yolo12_map = self.results['YOLOv12']['mAP@0.5']
-        faster_map = self.results['Faster R-CNN']['mAP@0.5']
-        yolo12_fps = self.results['YOLOv12']['FPS']
-        faster_fps = self.results['Faster R-CNN']['FPS']
-        
-        print(f"\n1. По точности (mAP@0.5):")
-        if yolo12_map > faster_map:
-            print(f"   ✅ YOLOv12 точнее на {yolo12_map - faster_map:.2f}%")
-        else:
-            print(f"   📌 Faster R-CNN точнее на {faster_map - yolo12_map:.2f}%")
-        
-        print(f"\n2. По локализации (mAP@0.5:0.95):")
-        yolo12_map095 = self.results['YOLOv12']['mAP@0.5:0.95']
-        faster_map095 = self.results['Faster R-CNN']['mAP@0.5:0.95']
-        if yolo12_map095 > faster_map095:
-            print(f"   ✅ YOLOv12 лучше на {yolo12_map095 - faster_map095:.2f}%")
-        else:
-            print(f"   📌 Faster R-CNN лучше на {faster_map095 - yolo12_map095:.2f}%")
-        
-        print(f"\n3. По скорости (FPS):")
-        print(f"   ✅ YOLOv12 быстрее в {yolo12_fps / faster_fps:.1f} раз")
-        
-        print(f"\n4. По компактности:")
-        yolo12_size = self.results['YOLOv12']['Size (MB)']
-        faster_size = self.results['Faster R-CNN']['Size (MB)']
-        print(f"   ✅ YOLOv12 меньше в {faster_size / yolo12_size:.1f} раз")
-        
-        print("\n" + "="*70)
-        print("💡 РЕКОМЕНДАЦИЯ:")
-        if yolo12_map > 90:
-            print("   ✅ YOLOv12 показывает отличную точность для задачи детекции слизней")
-        if yolo12_fps > faster_fps * 10:
-            print("   ✅ Для систем реального времени → используйте YOLOv12")
-        print("="*70)
+        print(f"Результаты сохранены: {output_path}")
 
 
 if __name__ == "__main__":
-    comparator = YOLOv12_vs_FasterRCNN()
-    results = comparator.run_comparison()
+    comparator = DetailedModelComparator()
+    results = comparator.run_detailed_comparison()
     
     if results:
-        comparator.print_results()
-        comparator.plot_results()
-        comparator.save_csv()
-        comparator.print_conclusion()
+        comparator.print_detailed_results()
+        comparator.plot_detailed_results()
+        comparator.save_detailed_results_csv()

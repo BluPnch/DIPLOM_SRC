@@ -161,7 +161,7 @@ def load_model(model_type="YOLOv12"):
 
 
 def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
-    """Prediction with Faster R-CNN"""
+    """Prediction with Faster R-CNN with temperature scaling"""
     from torchvision import transforms
     
     image = Image.open(image_path).convert('RGB')
@@ -178,9 +178,13 @@ def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
     
     pred = predictions[0]
     
-    keep = pred['scores'] > conf_threshold
+    # Temperature scaling для калибровки уверенности (temperature=1.5-2.0)
+    temperature = 1.8
+    scores = torch.sigmoid(pred['scores'] / temperature).cpu().numpy()
+    
+    keep = scores > conf_threshold
     boxes = pred['boxes'][keep].cpu().numpy()
-    scores = pred['scores'][keep].cpu().numpy()
+    scores = scores[keep]
     
     if len(boxes) > 0:
         scale_x = original_size[0] / 640
@@ -189,7 +193,6 @@ def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
         boxes[:, [1, 3]] *= scale_y
     
     return boxes, scores
-
 
 def process_images(image_paths, model, model_type):
     """Process images with selected model"""
