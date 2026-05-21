@@ -56,28 +56,24 @@ class ModelLoader:
         self.frcnn_model = None
     
     def find_yolo12_weights(self):
-        """Find YOLOv12 weights"""
         for path in self.yolo12_alternatives:
             if path.exists():
                 return path
         return None
     
     def find_yolo11_weights(self):
-        """Find YOLOv11 weights"""
         for path in self.yolo11_alternatives:
             if path.exists():
                 return path
         return None
     
     def find_yolo26_weights(self):
-        """Find YOLOv26 weights"""
         for path in self.yolo26_alternatives:
             if path.exists():
                 return path
         return None
     
     def load_yolo26(self):
-        """Load YOLOv26 model"""
         yolo26_path = self.find_yolo26_weights()
         if yolo26_path is not None:
             return YOLO(str(yolo26_path))
@@ -85,7 +81,6 @@ class ModelLoader:
         return YOLO("yolo26n.pt")
     
     def load_yolo12(self):
-        """Load YOLOv12 model"""
         yolo12_path = self.find_yolo12_weights()
         if yolo12_path is not None:
             return YOLO(str(yolo12_path))
@@ -93,7 +88,6 @@ class ModelLoader:
         return YOLO("yolo12n.pt")
     
     def load_yolo11(self):
-        """Load YOLOv11 model"""
         yolo11_path = self.find_yolo11_weights()
         if yolo11_path is not None:
             return YOLO(str(yolo11_path))
@@ -101,7 +95,6 @@ class ModelLoader:
         return YOLO("yolo11n.pt")
     
     def load_faster_rcnn(self):
-        """Load Faster R-CNN model"""
         if not self.frcnn_path.exists():
             st.error(f"Faster R-CNN model not found: {self.frcnn_path}")
             return None
@@ -147,7 +140,6 @@ class ModelLoader:
 
 @st.cache_resource
 def load_model(model_type="YOLOv12"):
-    """Load model with caching"""
     loader = ModelLoader()
     
     if model_type == "YOLOv11":
@@ -160,8 +152,7 @@ def load_model(model_type="YOLOv12"):
         return loader.load_faster_rcnn(), "faster_rcnn"
 
 
-def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
-    """Prediction with Faster R-CNN with temperature scaling"""
+def predict_faster_rcnn(model, image_path, conf_threshold, temperature):
     from torchvision import transforms
     
     image = Image.open(image_path).convert('RGB')
@@ -178,8 +169,6 @@ def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
     
     pred = predictions[0]
     
-    # Temperature scaling для калибровки уверенности (temperature=1.5-2.0)
-    temperature = 1.8
     scores = torch.sigmoid(pred['scores'] / temperature).cpu().numpy()
     
     keep = scores > conf_threshold
@@ -194,8 +183,8 @@ def predict_faster_rcnn(model, image_path, conf_threshold=0.5):
     
     return boxes, scores
 
-def process_images(image_paths, model, model_type):
-    """Process images with selected model"""
+
+def process_images(image_paths, model, model_type, conf_threshold, iou_threshold, temperature=1.8):
     st.session_state.image_paths = []
     st.session_state.annotated_paths = []
     st.session_state.counts = []
@@ -212,11 +201,17 @@ def process_images(image_paths, model, model_type):
         st.session_state.filenames.append(Path(img_path).name)
         
         if model_type == "yolo":
-            results = model.predict(source=img_path, conf=0.3, device='cuda' if torch.cuda.is_available() else 'cpu', verbose=False)
-            annotated = results[0].plot()
+            results = model.predict(
+                source=img_path, 
+                conf=conf_threshold,
+                iou=iou_threshold,
+                device='cuda' if torch.cuda.is_available() else 'cpu', 
+                verbose=False
+            )
+            annotated = results[0].plot(conf=conf_threshold)
             num = len(results[0].boxes) if results[0].boxes is not None else 0
         else:
-            boxes, scores = predict_faster_rcnn(model, img_path, conf_threshold=0.3)
+            boxes, scores = predict_faster_rcnn(model, img_path, conf_threshold, temperature)
             num = len(boxes)
             
             img = cv2.imread(img_path)
@@ -238,8 +233,7 @@ def process_images(image_paths, model, model_type):
     return len(image_paths) > 0
 
 
-def load_from_files(files, model, model_type):
-    """Load selected files"""
+def load_from_files(files, model, model_type, conf_threshold, iou_threshold, temperature):
     if not files:
         return False
     
@@ -252,7 +246,7 @@ def load_from_files(files, model, model_type):
             f.write(file.getbuffer())
         image_paths.append(img_path)
     
-    return process_images(image_paths, model, model_type)
+    return process_images(image_paths, model, model_type, conf_threshold, iou_threshold, temperature)
 
 
 def next_image():
@@ -284,8 +278,7 @@ with st.sidebar:
     
     model_choice = st.radio(
         "Select model for detection:",
-        ["YOLOv11", "YOLOv12", "YOLOv26", "Faster R-CNN"],
-        help="YOLOv11 - balanced accuracy and localization, YOLOv12 - highest accuracy, YOLOv26 - fastest, Faster R-CNN - slower but precise"
+        ["YOLOv11", "YOLOv12", "YOLOv26", "Faster R-CNN"]
     )
     
     model, model_type = load_model(model_choice)
@@ -294,14 +287,39 @@ with st.sidebar:
         st.error(f"Failed to load model: {model_choice}")
         st.stop()
     
-    if model_choice == "YOLOv11":
-        st.info("YOLOv11 model loaded (Good balance of accuracy and localization)")
-    elif model_choice == "YOLOv12":
-        st.info("YOLOv12 model loaded (Attention-based architecture, highest accuracy)")
-    elif model_choice == "YOLOv26":
-        st.info("YOLOv26 model loaded (NMS-free, optimized for speed)")
+    st.markdown("---")
+    
+    st.header("Detection Parameters")
+    
+    # Confidence threshold slider
+    conf_threshold = st.slider(
+        "Confidence Threshold",
+        min_value=0.1,
+        max_value=0.9,
+        value=0.3,
+        step=0.05
+    )
+    
+    # IoU threshold slider (для YOLO)
+    iou_threshold = st.slider(
+        "IoU Threshold (NMS)",
+        min_value=0.1,
+        max_value=0.9,
+        value=0.5,
+        step=0.05
+    )
+    
+    # Temperature scaling (для Faster R-CNN)
+    if model_choice == "Faster R-CNN":
+        temperature = st.slider(
+            "Temperature Scaling",
+            min_value=1.0,
+            max_value=3.0,
+            value=1.8,
+            step=0.1
+        )
     else:
-        st.info("Faster R-CNN model loaded (Higher localization accuracy)")
+        temperature = 1.8
     
     st.markdown("---")
     st.header("Image Upload")
@@ -315,7 +333,7 @@ with st.sidebar:
     if st.button("Run Detection", type="primary"):
         if uploaded_files:
             with st.spinner(f"Processing with {model_choice}..."):
-                if load_from_files(uploaded_files, model, model_type):
+                if load_from_files(uploaded_files, model, model_type, conf_threshold, iou_threshold, temperature):
                     st.success(f"Loaded {len(st.session_state.image_paths)} images")
                 else:
                     st.error("Failed to load images")
@@ -332,8 +350,13 @@ with st.sidebar:
         
         st.markdown("---")
         st.markdown(f"**Model:** {model_choice}")
+        st.markdown(f"**Confidence threshold:** {conf_threshold:.2f}")
+        st.markdown(f"**IoU threshold:** {iou_threshold:.2f}")
+        if model_choice == "Faster R-CNN":
+            st.markdown(f"**Temperature:** {temperature:.1f}")
+        
         if len(st.session_state.counts) > 0:
-            st.markdown(f"**Average:** {sum(st.session_state.counts)/len(st.session_state.counts):.1f} per image")
+            st.markdown(f"**Average slugs per image:** {sum(st.session_state.counts)/len(st.session_state.counts):.1f}")
 
 
 # Main area
@@ -370,7 +393,8 @@ if st.session_state.image_paths:
             st.session_state.current_index = len(st.session_state.image_paths) - 1
             st.rerun()
     
-    st.caption(f"Zoom: {st.session_state.image_scale:.1f}x")
+    # Display current parameters
+    st.caption(f"Zoom: {st.session_state.image_scale:.1f}x | Confidence: {conf_threshold:.2f} | IoU: {iou_threshold:.2f}")
     st.progress((idx + 1) / len(st.session_state.image_paths))
     
     def resize_image(image_path, scale):
@@ -403,4 +427,4 @@ if st.session_state.image_paths:
     st.markdown(f"**File:** {st.session_state.filenames[idx]} ({idx + 1} / {len(st.session_state.image_paths)})")
     
 else:
-    st.info("Select a model, then upload images in the sidebar")
+    st.info("Select a model, adjust parameters, then upload images in the sidebar")

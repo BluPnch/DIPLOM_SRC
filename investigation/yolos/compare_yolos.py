@@ -10,10 +10,11 @@ import numpy as np
 import torch
 import pandas as pd
 from PIL import Image
+from tqdm import tqdm
 from ultralytics import YOLO
 from torchmetrics.detection import MeanAveragePrecision
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path("C:/sem8/VKR/DIPLOM_SRC")
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -24,7 +25,7 @@ class YOLODetailedComparison:
     """Детальное сравнение YOLOv11, YOLOv12 и YOLOv26 с вариацией порога уверенности"""
     
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parents[1]
+        self.project_root = Path(__file__).resolve().parents[2]
         self.detectors_dir = self.project_root / "detectors"
         
         # Пути к моделям
@@ -36,21 +37,17 @@ class YOLODetailedComparison:
         self.alternative_paths = {
             'YOLOv26': [
                 self.detectors_dir / "yolo26" / "runs" / "train" / "weights" / "best.pt",
-                self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
             ],
             'YOLOv12': [
                 self.detectors_dir / "yolo12" / "runs" / "train" / "weights" / "best.pt",
-                self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
-                self.project_root / "runs" / "detect" / "train2" / "weights" / "best.pt",
             ],
             'YOLOv11': [
                 self.detectors_dir / "yolo11" / "runs" / "train" / "weights" / "best.pt",
-                self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
             ]
         }
         
-        # Равные промежутки для порога уверенности
-        self.confidence_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        # Мелкая сетка порогов (0.01, 0.03, ..., 0.99)
+        self.confidence_thresholds = np.arange(0.01, 1.0, 0.02)
         
         self.results = {}
         self.detailed_results = {}
@@ -60,11 +57,9 @@ class YOLODetailedComparison:
         if primary_path and primary_path.exists():
             return primary_path
         
-        print(f"   Searching {model_name} in alternative paths...")
         if model_name in self.alternative_paths:
             for alt_path in self.alternative_paths[model_name]:
                 if alt_path.exists():
-                    print(f"   Found {model_name}: {alt_path}")
                     return alt_path
         
         return None
@@ -159,8 +154,6 @@ class YOLODetailedComparison:
         all_confidences = []
         
         for run in range(num_runs):
-            print(f"      Run {run+1}/{num_runs}...")
-            
             metric = MeanAveragePrecision()
             predictions = []
             targets = []
@@ -223,16 +216,16 @@ class YOLODetailedComparison:
         test_img_path = test_images[0]
         
         # Warmup
-        for _ in range(3):
+        for _ in range(5):
             model(test_img_path, conf=conf_threshold, verbose=False)
         
         times = []
         for _ in range(num_runs):
-            start = time.time()
+            start = time.perf_counter()
             model(test_img_path, conf=conf_threshold, verbose=False)
-            times.append(time.time() - start)
+            times.append((time.perf_counter() - start) * 1000)
         
-        avg_time = np.mean(times) * 1000
+        avg_time = np.mean(times)
         fps = 1000 / avg_time if avg_time > 0 else 0
         
         return fps, avg_time
@@ -247,7 +240,7 @@ class YOLODetailedComparison:
         """Run detailed comparison with threshold variation"""
         print("\n" + "="*80)
         print("DETAILED COMPARISON: YOLOv11 vs YOLOv12 vs YOLOv26".center(80))
-        print("WITH CONFIDENCE THRESHOLD VARIATION".center(80))
+        print(f"КОЛИЧЕСТВО ПОРОГОВ: {len(self.confidence_thresholds)}".center(80))
         print("="*80)
         
         # Get test data
@@ -289,17 +282,13 @@ class YOLODetailedComparison:
             model_sizes[model_name] = self.get_model_size(weights_path)
         
         # Collect results for different thresholds
-        print("\n[2/4] Evaluating accuracy at different thresholds (averaged over 3 runs)...")
+        print("\n[2/4] Evaluating accuracy at different thresholds...")
         print("-" * 80)
         
         self.detailed_results = {model_name: [] for model_name in models.keys()}
         
-        for threshold in self.confidence_thresholds:
-            print(f"\n   Threshold {threshold}:")
-            
+        for threshold in tqdm(self.confidence_thresholds, desc="Обработка порогов"):
             for model_name, model in models.items():
-                print(f"      {model_name}...")
-                
                 metrics = self.evaluate_at_threshold(
                     model, model_name, test_images, labels_dir, threshold
                 )
@@ -310,10 +299,6 @@ class YOLODetailedComparison:
                 metrics['Size (MB)'] = model_sizes[model_name]
                 
                 self.detailed_results[model_name].append(metrics)
-                
-                print(f"         mAP@0.5={metrics['mAP@0.5']:.2f}%, "
-                      f"FPS={fps:.1f}, Detections={metrics['total_detections']}, "
-                      f"AvgConf={metrics['avg_confidence']:.3f}")
         
         return self.detailed_results
     
@@ -326,7 +311,7 @@ class YOLODetailedComparison:
         model_names = list(self.detailed_results.keys())
         
         print("\n" + "="*120)
-        print("DETAILED RESULTS AT DIFFERENT THRESHOLDS (averaged over 3 runs)".center(120))
+        print("DETAILED RESULTS AT DIFFERENT THRESHOLDS".center(120))
         print("="*120)
         
         for model_name in model_names:
@@ -336,7 +321,7 @@ class YOLODetailedComparison:
             print("-"*110)
             
             for r in self.detailed_results[model_name]:
-                print(f"{r['threshold']:<10.2f} {r['mAP@0.5']:>11.2f}% {r['mAP@0.5:0.95']:>14.2f}% "
+                print(f"{r['threshold']:<10.3f} {r['mAP@0.5']:>11.2f}% {r['mAP@0.5:0.95']:>14.2f}% "
                       f"{r['Recall@100']:>9.2f}% {r['FPS']:>7.1f} {r['total_detections']:>12} {r['avg_confidence']:>9.3f}")
             
             print("-"*110)
@@ -357,59 +342,64 @@ class YOLODetailedComparison:
         for model_name in model_names:
             detections = [r['total_detections'] for r in self.detailed_results[model_name]]
             axes[0, 0].plot(thresholds, detections, 'o-', label=model_name, 
-                           color=colors[model_name], linewidth=2, markersize=8)
+                           color=colors[model_name], linewidth=1.5, markersize=3)
         axes[0, 0].set_xlabel('Confidence Threshold')
         axes[0, 0].set_ylabel('Number of Detections')
         axes[0, 0].set_title('Detection Count vs Threshold')
         axes[0, 0].legend()
         axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].set_xlim(0, 1)
         
         # Plot 2: FPS vs threshold
         for model_name in model_names:
             fps = [r['FPS'] for r in self.detailed_results[model_name]]
             axes[0, 1].plot(thresholds, fps, 'o-', label=model_name, 
-                           color=colors[model_name], linewidth=2, markersize=8)
+                           color=colors[model_name], linewidth=1.5, markersize=3)
         axes[0, 1].set_xlabel('Confidence Threshold')
         axes[0, 1].set_ylabel('FPS')
         axes[0, 1].set_title('Inference Speed vs Threshold')
         axes[0, 1].legend()
         axes[0, 1].grid(True, alpha=0.3)
+        axes[0, 1].set_xlim(0, 1)
         
         # Plot 3: Average confidence vs threshold
         for model_name in model_names:
             avg_conf = [r['avg_confidence'] for r in self.detailed_results[model_name]]
             axes[0, 2].plot(thresholds, avg_conf, 'o-', label=model_name, 
-                           color=colors[model_name], linewidth=2, markersize=8)
+                           color=colors[model_name], linewidth=1.5, markersize=3)
         axes[0, 2].set_xlabel('Confidence Threshold')
         axes[0, 2].set_ylabel('Average Confidence')
         axes[0, 2].set_title('Average Confidence vs Threshold')
         axes[0, 2].legend()
         axes[0, 2].grid(True, alpha=0.3)
         axes[0, 2].set_ylim(0, 1)
+        axes[0, 2].set_xlim(0, 1)
         
         # Plot 4: mAP@0.5 vs threshold
         for model_name in model_names:
             map_vals = [r['mAP@0.5'] for r in self.detailed_results[model_name]]
             axes[1, 0].plot(thresholds, map_vals, 'o-', label=model_name, 
-                           color=colors[model_name], linewidth=2, markersize=8)
+                           color=colors[model_name], linewidth=1.5, markersize=3)
         axes[1, 0].set_xlabel('Confidence Threshold')
         axes[1, 0].set_ylabel('mAP@0.5 (%)')
         axes[1, 0].set_title('Detection Accuracy vs Threshold')
         axes[1, 0].legend()
         axes[1, 0].grid(True, alpha=0.3)
         axes[1, 0].set_ylim(0, 100)
+        axes[1, 0].set_xlim(0, 1)
         
         # Plot 5: mAP@0.5:0.95 vs threshold
         for model_name in model_names:
             map095_vals = [r['mAP@0.5:0.95'] for r in self.detailed_results[model_name]]
             axes[1, 1].plot(thresholds, map095_vals, 'o-', label=model_name, 
-                           color=colors[model_name], linewidth=2, markersize=8)
+                           color=colors[model_name], linewidth=1.5, markersize=3)
         axes[1, 1].set_xlabel('Confidence Threshold')
         axes[1, 1].set_ylabel('mAP@0.5:0.95 (%)')
         axes[1, 1].set_title('Localization Accuracy vs Threshold')
         axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
         axes[1, 1].set_ylim(0, 100)
+        axes[1, 1].set_xlim(0, 1)
         
         # Plot 6: Summary comparison
         metrics = ['mAP@0.5', 'mAP@0.5:0.95', 'AvgConf']
@@ -474,7 +464,7 @@ class YOLODetailedComparison:
         for model_name, results in self.detailed_results.items():
             # Find optimal threshold (maximizing mAP@0.5 * Recall)
             best = max(results, key=lambda x: x['mAP@0.5'] * x['Recall@100'])
-            print(f"\nRecommended threshold for {model_name}: {best['threshold']}")
+            print(f"\nRecommended threshold for {model_name}: {best['threshold']:.3f}")
             print(f"   mAP@0.5 = {best['mAP@0.5']:.2f}%")
             print(f"   Recall@100 = {best['Recall@100']:.2f}%")
             print(f"   FPS = {best['FPS']:.1f}")
@@ -482,9 +472,6 @@ class YOLODetailedComparison:
         
         print("\n" + "="*70)
         print("RECOMMENDATION:")
-        print("   For YOLOv11: threshold 0.3-0.4")
-        print("   For YOLOv12: threshold 0.3-0.4")
-        print("   For YOLOv26: threshold 0.3-0.4")
         print("   YOLOv12 shows the best overall performance")
         print("="*70)
 
