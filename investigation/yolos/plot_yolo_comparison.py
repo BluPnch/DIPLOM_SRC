@@ -1,6 +1,10 @@
 # investigation/yolos/plot_yolo_comparison.py
 """Построение графиков сравнения YOLOv11, YOLOv12 и YOLOv26 с эталонной линией"""
 
+import os
+
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,11 +14,11 @@ from pathlib import Path
 # Путь к файлу с результатами
 RESULTS_FILE = Path(__file__).parent / "yolo_detailed_comparison.csv"
 
-# Стили для разных моделей
+# Стили для разных моделей (БЕЗ маркеров)
 MODEL_STYLES = {
-    'YOLOv11': {'color': '#2E86AB', 'linestyle': '--', 'linewidth': 2, 'marker': 'o', 'markersize': 3, 'label': 'YOLOv11'},
-    'YOLOv12': {'color': '#F18F01', 'linestyle': '-.', 'linewidth': 2, 'marker': 's', 'markersize': 3, 'label': 'YOLOv12'},
-    'YOLOv26': {'color': '#A23B72', 'linestyle': ':', 'linewidth': 2, 'marker': '^', 'markersize': 3, 'label': 'YOLOv26'},
+    'YOLOv11': {'color': '#2E86AB', 'linestyle': '--', 'linewidth': 2.5, 'label': 'YOLOv11'},
+    'YOLOv12': {'color': '#F18F01', 'linestyle': '-', 'linewidth': 2.5, 'label': 'YOLOv12'},
+    'YOLOv26': {'color': '#A23B72', 'linestyle': '-.', 'linewidth': 2.5, 'label': 'YOLOv26'},
 }
 
 # Эталонная линия (количество объектов в датасете)
@@ -29,6 +33,8 @@ class YOLOPlotter:
     
     def __init__(self):
         self.data = None
+        self.max_detections = GROUND_TRUTH_DETECTIONS
+        self.min_threshold = 0.01
         self.load_data()
     
     def load_data(self):
@@ -36,22 +42,46 @@ class YOLOPlotter:
         if not RESULTS_FILE.exists():
             print(f"Файл {RESULTS_FILE} не найден")
             return
-        
+
+        global GROUND_TRUTH_DETECTIONS
+
         df = pd.read_csv(RESULTS_FILE)
         self.models = {
             'YOLOv11': df[df['Model'] == 'YOLOv11'].copy(),
             'YOLOv12': df[df['Model'] == 'YOLOv12'].copy(),
             'YOLOv26': df[df['Model'] == 'YOLOv26'].copy()
         }
-        
+
         for model_name, model_df in self.models.items():
             model_df = model_df.sort_values('Confidence_Threshold')
             self.models[model_name] = model_df
-        
+
+        if 'Total_GT' in df.columns and len(df) > 0:
+            GROUND_TRUTH_DETECTIONS = int(df['Total_GT'].iloc[0])
+
+        self.max_detections = max(
+            (
+                model_df['Total_Detections'].max()
+                for model_df in self.models.values()
+                if len(model_df) > 0
+            ),
+            default=GROUND_TRUTH_DETECTIONS,
+        )
+        self.min_threshold = min(
+            (
+                model_df['Confidence_Threshold'].min()
+                for model_df in self.models.values()
+                if len(model_df) > 0
+            ),
+            default=0.01,
+        )
+
         print(f"Загружены данные: {len(self.models['YOLOv11'])} записей для YOLOv11")
         print(f"Загружены данные: {len(self.models['YOLOv12'])} записей для YOLOv12")
         print(f"Загружены данные: {len(self.models['YOLOv26'])} записей для YOLOv26")
         print(f"Эталонное количество объектов: {GROUND_TRUTH_DETECTIONS}")
+        print(f"Диапазон порогов: {self.min_threshold:.2f} … 1.00")
+        print(f"Макс. детекций (низкий порог): {int(self.max_detections)}")
     
     def smooth_curve(self, x, y, num_points=300):
         """Сглаживание кривой"""
@@ -72,7 +102,7 @@ class YOLOPlotter:
         return x_smooth, y_smooth
     
     def find_intersection_point(self, x_values, y_values, target_y):
-        """Нахождение точки пересечения кривой с горизонтальной линией"""
+        """Нахождение точки пересечения кривой с горизонтальной линией (в любом направлении)"""
         for i in range(len(y_values) - 1):
             if (y_values[i] - target_y) * (y_values[i+1] - target_y) <= 0:
                 if y_values[i+1] != y_values[i]:
@@ -86,11 +116,13 @@ class YOLOPlotter:
         fig, ax = plt.subplots(figsize=(14, 7))
         
         # Эталонная линия
-        ax.axhline(y=GROUND_TRUTH_DETECTIONS, 
-                   color=GROUND_TRUTH_COLOR, 
-                   linestyle=GROUND_TRUTH_LINESTYLE, 
-                   linewidth=GROUND_TRUTH_LINEWIDTH,
-                   label=f'Эталон ({GROUND_TRUTH_DETECTIONS} объектов)')
+        ax.axhline(
+            y=GROUND_TRUTH_DETECTIONS,
+            color=GROUND_TRUTH_COLOR,
+            linestyle=GROUND_TRUTH_LINESTYLE,
+            linewidth=GROUND_TRUTH_LINEWIDTH,
+            label=f'Эталон ({GROUND_TRUTH_DETECTIONS} объектов)'
+        )
         
         # Список для хранения информации о пересечениях
         intersections = []
@@ -104,72 +136,195 @@ class YOLOPlotter:
             y = model_df['Total_Detections'].values
             style = MODEL_STYLES[model_name]
             
-            # Сглаженная кривая
-            x_smooth, y_smooth = self.smooth_curve(model_df['Confidence_Threshold'], 
-                                                   model_df['Total_Detections'])
-            ax.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
+            # Только линии, без маркеров
+            ax.plot(
+                x, y,
+                color=style['color'],
+                linestyle=style['linestyle'],
+                linewidth=style['linewidth'],
+                label=style['label']
+            )
             
-            # Нахождение точки пересечения с эталоном
-            x_intersect = self.find_intersection_point(x_smooth, y_smooth, GROUND_TRUTH_DETECTIONS)
+            # Для нахождения пересечения используем оригинальные точки
+            x_intersect = self.find_intersection_point(
+                x,
+                y,
+                GROUND_TRUTH_DETECTIONS
+            )
             
             if x_intersect is not None and 0 <= x_intersect <= 1:
                 intersections.append((model_name, x_intersect, style['color']))
+                print(f"  {model_name}: пересечение при пороге {x_intersect:.4f}")
+                
                 # Точка пересечения
-                ax.plot(x_intersect, GROUND_TRUTH_DETECTIONS, 
-                        'o', color=style['color'], markersize=8, 
-                        markeredgecolor='black', markeredgewidth=0.5)
+                ax.plot(
+                    x_intersect,
+                    GROUND_TRUTH_DETECTIONS,
+                    'o',
+                    color=style['color'],
+                    markersize=8,
+                    markeredgecolor='black',
+                    markeredgewidth=0.5
+                )
+                
                 # Вертикальная линия
-                ax.axvline(x=x_intersect, color=style['color'], linestyle=':', linewidth=1.5, alpha=0.7)
+                ax.axvline(
+                    x=x_intersect,
+                    color=style['color'],
+                    linestyle=':',
+                    linewidth=1.5,
+                    alpha=0.7
+                )
+            else:
+                print(f"  {model_name}: пересечение НЕ найдено")
         
-        ax.set_xlabel('Порог уверенности', fontsize=12)
-        ax.set_ylabel('Количество обнаруженных объектов', fontsize=12)
-        ax.set_title('Сравнение количества обнаруженных объектов с эталоном', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Порог уверенности', fontsize=14)
+        ax.set_ylabel('Количество обнаруженных объектов', fontsize=14)
+        ax.set_title(
+            'Сравнение количества обнаруженных объектов с эталоном',
+            fontsize=16,
+            fontweight='bold'
+        )
+        
         ax.legend(loc='best', frameon=True)
         ax.grid(True, alpha=0.3, linestyle=':')
+        
         ax.set_xlim(0, 1)
-        ax.set_ylim(0, GROUND_TRUTH_DETECTIONS + 50)
         
-        # Добавление подписей порогов внизу графика (на оси X)
-        # Создаём второй набор тиков
-        current_xticks = list(ax.get_xticks())
-        new_xticks = current_xticks.copy()
-        new_xtick_labels = [f'{tick:.2f}' if tick not in [x for _, x, _ in intersections] else '' for tick in current_xticks]
+        y_max = max(
+            self.max_detections * 1.08,
+            GROUND_TRUTH_DETECTIONS + 50
+        )
+        ax.set_ylim(0, y_max)
+
+        # ==========================================================
+        # ТИКИ ОСИ X
+        # ==========================================================
         
-        for model_name, x_int, color in intersections:
-            if x_int not in new_xticks:
-                new_xticks.append(x_int)
-                new_xtick_labels.append(f'{x_int:.2f}')
+        all_xticks = [0.0, 0.01, 0.05] + list(np.arange(0.1, 1.05, 0.1))
+        all_xticks = sorted(set(round(t, 2) for t in all_xticks))
+        
+        tick_positions = []
+        tick_labels = []
+        tick_is_intersection = []
+
+        # ----------------------------------------------------------
+        # ОБЫЧНЫЕ ТИКИ
+        # ----------------------------------------------------------
+        
+        for tick in all_xticks:
+            tick_positions.append(tick)
+
+            if tick < 0.1:
+                tick_labels.append(f'{tick:.2f}')
             else:
-                idx = new_xticks.index(x_int)
-                new_xtick_labels[idx] = f'{x_int:.2f}'
+                tick_labels.append(f'{tick:.1f}')
+
+            tick_is_intersection.append(False)
+
+        # ----------------------------------------------------------
+        # СМЕЩЕНИЯ
+        # ----------------------------------------------------------
         
-        # Сортируем тики
-        sorted_pairs = sorted(zip(new_xticks, new_xtick_labels))
-        new_xticks = [p[0] for p in sorted_pairs]
-        new_xtick_labels = [p[1] for p in sorted_pairs]
+        offset_map = {
+            'YOLOv11': -0.015,
+            'YOLOv12': 0.005,
+            'YOLOv26': 0.025
+        }
+
+        intersections_sorted = sorted(intersections, key=lambda x: x[1])
+
+        # ----------------------------------------------------------
+        # ДОБАВЛЕНИЕ ПОДПИСЕЙ ПЕРЕСЕЧЕНИЙ
+        # ----------------------------------------------------------
         
-        ax.set_xticks(new_xticks)
-        ax.set_xticklabels(new_xtick_labels, rotation=45, ha='right', fontsize=9)
+        for model_name, x_int, color in intersections_sorted:
+
+            need_offset = False
+
+            for existing_tick in tick_positions:
+                if abs(x_int - existing_tick) < 0.02:
+                    need_offset = True
+                    break
+
+            if need_offset:
+                offset = offset_map.get(model_name, 0)
+                new_pos = x_int + offset
+
+                if 0 < new_pos < 1:
+                    tick_positions.append(new_pos)
+                else:
+                    tick_positions.append(x_int)
+            else:
+                tick_positions.append(x_int)
+
+            tick_labels.append(f'{x_int:.2f}')
+            tick_is_intersection.append(True)
+
+        # ==========================================================
+        # СОРТИРОВКА
+        # ==========================================================
         
-        # Добавляем цветные метки для подписей
-        for model_name, x_int, color in intersections:
-            # Находим индекс в новых тиках
-            if x_int in new_xticks:
-                idx = new_xticks.index(x_int)
-                # Изменяем цвет метки
-                ax.get_xticklabels()[idx].set_color(color)
-                ax.get_xticklabels()[idx].set_fontweight('bold')
+        sorted_data = sorted(
+            zip(tick_positions, tick_labels, tick_is_intersection),
+            key=lambda x: x[0]
+        )
+
+        tick_positions = [x[0] for x in sorted_data]
+        tick_labels = [x[1] for x in sorted_data]
+        tick_is_intersection = [x[2] for x in sorted_data]
+
+        # ==========================================================
+        # УСТАНОВКА ТИКОВ
+        # ==========================================================
         
+        ax.set_xticks(tick_positions)
+
+        tick_labels_obj = ax.set_xticklabels(
+            tick_labels,
+            rotation=45,
+            ha='right',
+            fontsize=14
+        )
+
+        # ==========================================================
+        # ОКРАШИВАНИЕ ТОЛЬКО ПЕРЕСЕЧЕНИЙ
+        # ==========================================================
+        
+        intersection_idx = 0
+
+        for i, is_intersection in enumerate(tick_is_intersection):
+
+            if is_intersection:
+                model_name, x_int, color = intersections_sorted[intersection_idx]
+
+                tick_labels_obj[i].set_color(color)
+                tick_labels_obj[i].set_fontweight('bold')
+
+                print(
+                    f"  Подпись для {model_name} "
+                    f"окрашена в цвет {color}"
+                )
+
+                intersection_idx += 1
+
         plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_detections_comparison.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
+
+        output_path = (
+            RESULTS_FILE.parent /
+            'plot_detections_comparison.png'
+        )
+
+        plt.savefig(
+            str(output_path),
+            dpi=300,
+            bbox_inches='tight'
+        )
+
+        plt.close(fig)
+
         print(f"Сохранён: {output_path}")
-    
+
     def plot_recall_comparison(self):
         """График: Recall@100 vs порог"""
         plt.figure(figsize=(10, 6))
@@ -186,13 +341,11 @@ class YOLOPlotter:
                     color=style['color'],
                     linestyle=style['linestyle'],
                     linewidth=style['linewidth'],
-                    marker=style['marker'],
-                    markersize=style['markersize'],
                     label=style['label'])
         
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('Recall@100 (%)', fontsize=12)
-        plt.title('Сравнение полноты обнаружения', fontsize=14, fontweight='bold')
+        plt.xlabel('Порог уверенности', fontsize=14)
+        plt.ylabel('Recall@100 (%)', fontsize=14)
+        plt.title('Сравнение полноты обнаружения', fontsize=16, fontweight='bold')
         plt.legend(loc='best', frameon=True)
         plt.grid(True, alpha=0.3, linestyle=':')
         plt.xlim(0, 1)
@@ -201,9 +354,9 @@ class YOLOPlotter:
         plt.tight_layout()
         output_path = RESULTS_FILE.parent / 'plot_recall_comparison.png'
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         print(f"Сохранён: {output_path}")
-    
+
     def plot_map_comparison(self):
         """График: mAP@0.5 vs порог"""
         plt.figure(figsize=(10, 6))
@@ -220,13 +373,11 @@ class YOLOPlotter:
                     color=style['color'],
                     linestyle=style['linestyle'],
                     linewidth=style['linewidth'],
-                    marker=style['marker'],
-                    markersize=style['markersize'],
                     label=style['label'])
         
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('mAP@0.5 (%)', fontsize=12)
-        plt.title('Сравнение точности детекции', fontsize=14, fontweight='bold')
+        plt.xlabel('Порог уверенности', fontsize=14)
+        plt.ylabel('mAP@0.5 (%)', fontsize=14)
+        plt.title('Сравнение точности детекции', fontsize=16, fontweight='bold')
         plt.legend(loc='best', frameon=True)
         plt.grid(True, alpha=0.3, linestyle=':')
         plt.xlim(0, 1)
@@ -235,9 +386,9 @@ class YOLOPlotter:
         plt.tight_layout()
         output_path = RESULTS_FILE.parent / 'plot_map_comparison.png'
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         print(f"Сохранён: {output_path}")
-    
+
     def plot_map095_comparison(self):
         """График: mAP@0.5:0.95 vs порог"""
         plt.figure(figsize=(10, 6))
@@ -254,13 +405,11 @@ class YOLOPlotter:
                     color=style['color'],
                     linestyle=style['linestyle'],
                     linewidth=style['linewidth'],
-                    marker=style['marker'],
-                    markersize=style['markersize'],
                     label=style['label'])
         
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('mAP@0.5:0.95 (%)', fontsize=12)
-        plt.title('Сравнение точности локализации', fontsize=14, fontweight='bold')
+        plt.xlabel('Порог уверенности', fontsize=14)
+        plt.ylabel('mAP@0.5:0.95 (%)', fontsize=14)
+        plt.title('Сравнение точности локализации', fontsize=16, fontweight='bold')
         plt.legend(loc='best', frameon=True)
         plt.grid(True, alpha=0.3, linestyle=':')
         plt.xlim(0, 1)
@@ -269,9 +418,9 @@ class YOLOPlotter:
         plt.tight_layout()
         output_path = RESULTS_FILE.parent / 'plot_map095_comparison.png'
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         print(f"Сохранён: {output_path}")
-    
+
     def plot_fps_comparison(self):
         """График: FPS vs порог"""
         plt.figure(figsize=(10, 6))
@@ -288,13 +437,11 @@ class YOLOPlotter:
                     color=style['color'],
                     linestyle=style['linestyle'],
                     linewidth=style['linewidth'],
-                    marker=style['marker'],
-                    markersize=style['markersize'],
                     label=style['label'])
         
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('FPS', fontsize=12)
-        plt.title('Сравнение скорости обработки', fontsize=14, fontweight='bold')
+        plt.xlabel('Порог уверенности', fontsize=14)
+        plt.ylabel('FPS', fontsize=14)
+        plt.title('Сравнение скорости обработки', fontsize=16, fontweight='bold')
         plt.legend(loc='best', frameon=True)
         plt.grid(True, alpha=0.3, linestyle=':')
         plt.xlim(0, 1)
@@ -302,9 +449,9 @@ class YOLOPlotter:
         plt.tight_layout()
         output_path = RESULTS_FILE.parent / 'plot_fps_comparison.png'
         plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         print(f"Сохранён: {output_path}")
-    
+
     def plot_all(self):
         """Построение всех графиков"""
         print("\n" + "="*60)

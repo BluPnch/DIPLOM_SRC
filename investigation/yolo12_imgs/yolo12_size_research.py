@@ -1,12 +1,19 @@
 # detectors/yolo12_size_research_v2.py
-"""Исследование влияния размера изображения на производительность YOLOv12 (3 исходных изображения в разных разрешениях)"""
+"""Исследование влияния размера изображения на производительность YOLOv12 (изображения с шагом 10px)"""
 
+import sys
 import time
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 from ultralytics import YOLO
+
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from slug_detection.paths import DETECTORS_DIR, REPO_ROOT, RUNS_DIR
 import matplotlib.pyplot as plt
 from PIL import Image
 import warnings
@@ -26,24 +33,41 @@ class YOLOv12SizeResearchV2:
         self.results = []
     
     def get_image_files(self):
-        """Получение всех изображений из папки, сгруппированных по исходному изображению"""
-        image_files = list(self.images_dir.glob("*.jpg")) + list(self.images_dir.glob("*.jpeg")) + list(self.images_dir.glob("*.png"))
+        """Получение всех изображений из папки и подпапок, сгруппированных по исходному изображению"""
+        # Рекурсивно ищем все изображения во всех подпапках
+        image_files = list(self.images_dir.rglob("*.jpg")) + \
+                      list(self.images_dir.rglob("*.jpeg")) + \
+                      list(self.images_dir.rglob("*.png"))
         
-        # Группировка по исходному изображению (по префиксу 1-, 2-, 3-)
+        # Группировка по исходному изображению (по префиксу до дефиса)
         grouped = {}
         for f in image_files:
-            prefix = f.stem.split('-')[0]  # "1", "2", "3"
-            if prefix not in grouped:
-                grouped[prefix] = []
-            grouped[prefix].append(f)
+            try:
+                # Извлекаем префикс (номер изображения) из имени файла
+                # Формат: "1-2048.jpg" или "1-8.jpg"
+                filename = f.stem  # без расширения
+                prefix = filename.split('-')[0]
+                
+                # Извлекаем высоту из имени файла
+                height = int(filename.split('-')[1])
+                
+                if prefix not in grouped:
+                    grouped[prefix] = []
+                grouped[prefix].append((f, height))
+            except (IndexError, ValueError) as e:
+                print(f"Предупреждение: файл {f.name} не соответствует формату, пропускаем ({e})")
+                continue
         
-        # Сортировка внутри каждой группы по размеру
+        # Сортировка внутри каждой группы по высоте
         for prefix in grouped:
-            grouped[prefix] = sorted(grouped[prefix], key=lambda x: int(x.stem.split('-')[1]))
+            grouped[prefix] = sorted(grouped[prefix], key=lambda x: x[1])  # сортируем по высоте
+            # Оставляем только пути к файлам
+            grouped[prefix] = [item[0] for item in grouped[prefix]]
         
         return grouped
     
     def get_image_size(self, img_path):
+        """Получение размеров изображения"""
         with Image.open(img_path) as img:
             width, height = img.size
         return width, height
@@ -68,12 +92,12 @@ class YOLOv12SizeResearchV2:
             elapsed_time = (time.perf_counter() - start_time) * 1000
             
             result = results[0]
-            if result.boxes is not None:
+            if result.boxes is not None and len(result.boxes) > 0:
                 num = len(result.boxes)
-                avg_conf = result.boxes.conf.mean().item() if num > 0 else 0
+                avg_conf = result.boxes.conf.mean().item()
             else:
                 num = 0
-                avg_conf = 0
+                avg_conf = 0.0
             
             detections.append(num)
             times.append(elapsed_time)
@@ -100,12 +124,20 @@ class YOLOv12SizeResearchV2:
         
         grouped_images = self.get_image_files()
         
-        for prefix, images in grouped_images.items():
+        print(f"Найдено исходных изображений: {len(grouped_images)}")
+        print(f"Префиксы: {sorted(grouped_images.keys(), key=int)[:10]}...")
+        
+        # Общее количество файлов для обработки
+        total_files = sum(len(images) for images in grouped_images.values())
+        print(f"Всего файлов для обработки: {total_files}\n")
+        
+        processed = 0
+        for prefix, images in sorted(grouped_images.items(), key=lambda x: int(x[0])):
             print(f"\n{'='*50}")
-            print(f"Исходное изображение {prefix}")
+            print(f"Исходное изображение {prefix} (всего {len(images)} размеров)")
             print(f"{'='*50}")
             
-            for img_path in tqdm(images, desc=f"  Обработка"):
+            for img_path in tqdm(images, desc=f"  Обработка {prefix}"):
                 width, height = self.get_image_size(img_path)
                 size_mb = img_path.stat().st_size / (1024 * 1024)
                 img_name = img_path.name
@@ -127,16 +159,22 @@ class YOLOv12SizeResearchV2:
                     'std_confidence': result['std_confidence']
                 })
                 
-                print(f"    {img_name}: {width}×{height} | "
-                      f"Время: {result['avg_time_ms']:.1f}±{result['std_time_ms']:.1f} мс | "
-                      f"Детекций: {result['avg_detections']:.0f} | "
-                      f"Уверенность: {result['avg_confidence']:.3f}")
+                processed += 1
+                # Периодически выводим информацию (каждый 10-й файл)
+                if processed % 10 == 0:
+                    print(f"    {img_name}: {width}×{height} | "
+                          f"Время: {result['avg_time_ms']:.1f}±{result['std_time_ms']:.1f} мс | "
+                          f"Детекций: {result['avg_detections']:.0f} | "
+                          f"Уверенность: {result['avg_confidence']:.3f}")
     
     def save_results_csv(self, output_path="yolo12_size_results_v2.csv"):
         df = pd.DataFrame(self.results)
         df = df.sort_values(['image_prefix', 'height'])
         df.to_csv(output_path, index=False, encoding='utf-8-sig')
         print(f"\nРезультаты сохранены в {output_path}")
+        print(f"Всего записей: {len(df)}")
+        print(f"Количество уникальных изображений: {df['image_prefix'].nunique()}")
+        print(f"Диапазон высот: {df['height'].min()} - {df['height'].max()}")
         return df
 
 
@@ -145,6 +183,12 @@ class ResultsPlotter:
     
     def __init__(self, csv_path):
         self.df = pd.read_csv(csv_path)
+        
+        # Определяем все уникальные префиксы
+        self.all_prefixes = sorted(self.df['image_prefix'].unique(), key=lambda x: int(x))
+        print(f"Найдено префиксов: {len(self.all_prefixes)}")
+        print(f"Префиксы: {self.all_prefixes[:10]}..." if len(self.all_prefixes) > 10 else f"Префиксы: {self.all_prefixes}")
+        
         # Усреднение по одинаковым высотам для каждого исходного изображения
         self.df_grouped = self.df.groupby(['image_prefix', 'height']).agg({
             'avg_time_ms': 'mean',
@@ -157,205 +201,141 @@ class ResultsPlotter:
         
         self.df_grouped = self.df_grouped.sort_values('height')
         
-        print(f"Уникальных размеров: {len(self.df_grouped)}")
-    
-    def plot_time_vs_height(self):
-        """График: Время обработки от высоты"""
-        plt.figure(figsize=(12, 7))
-        
-        colors = {'1': 'blue', '2': 'green', '3': 'red'}
-        markers = {'1': 'o', '2': 's', '3': '^'}
-        
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                x = data['height'].values
-                y = data['avg_time_ms'].values
-                y_err = data['std_time_ms'].values
-                
-                plt.errorbar(x, y, yerr=y_err, fmt=markers[prefix], 
-                            color=colors[prefix], capsize=5, capthick=1, 
-                            markersize=8, label=f'Изображение {prefix}', alpha=0.8)
-        
-        plt.xlabel('Высота изображения (пиксели)', fontsize=12)
-        plt.ylabel('Время обработки (мс)', fontsize=12)
-        plt.title('Зависимость времени обработки от высоты изображения', fontsize=14, fontweight='bold')
-        plt.legend(loc='upper left', fontsize=10)
-        plt.grid(True, alpha=0.3, linestyle='--')
-        plt.xscale('log', base=2)
-        plt.xticks([16, 32, 64, 128, 256, 512, 1024, 2048], 
-                   ['16', '32', '64', '128', '256', '512', '1024', '2048'])
-        plt.ylim(bottom=0)
-        
-        plt.tight_layout()
-        plt.savefig(Path(__file__).parent / 'plot_time_vs_height_v2.png', dpi=300, bbox_inches='tight')
-        plt.show()
-        print("Сохранён: plot_time_vs_height_v2.png")
-    
-    def plot_confidence_vs_height(self):
-        """График: Уверенность от высоты"""
-        plt.figure(figsize=(12, 7))
-        
-        colors = {'1': 'blue', '2': 'green', '3': 'red'}
-        markers = {'1': 'o', '2': 's', '3': '^'}
-        
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                x = data['height'].values
-                y = data['avg_confidence'].values
-                y_err = data['std_confidence'].values
-                
-                plt.errorbar(x, y, yerr=y_err, fmt=markers[prefix], 
-                            color=colors[prefix], capsize=5, capthick=1, 
-                            markersize=8, label=f'Изображение {prefix}', alpha=0.8)
-        
-        plt.xlabel('Высота изображения (пиксели)', fontsize=12)
-        plt.ylabel('Средняя уверенность', fontsize=12)
-        plt.title('Зависимость уверенности детекции от высоты изображения', fontsize=14, fontweight='bold')
-        plt.legend(loc='lower right', fontsize=10)
-        plt.grid(True, alpha=0.3, linestyle='--')
-        plt.xscale('log', base=2)
-        plt.xticks([16, 32, 64, 128, 256, 512, 1024, 2048], 
-                   ['16', '32', '64', '128', '256', '512', '1024', '2048'])
-        plt.ylim(0, 1)
-        
-        plt.tight_layout()
-        plt.savefig(Path(__file__).parent / 'plot_confidence_vs_height_v2.png', dpi=300, bbox_inches='tight')
-        plt.show()
-        print("Сохранён: plot_confidence_vs_height_v2.png")
-    
-    def plot_detections_vs_height(self):
-        """График: Количество детекций от высоты"""
-        plt.figure(figsize=(12, 7))
-        
-        colors = {'1': 'blue', '2': 'green', '3': 'red'}
-        markers = {'1': 'o', '2': 's', '3': '^'}
-        
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                x = data['height'].values
-                y = data['avg_detections'].values
-                
-                plt.plot(x, y, markers[prefix]+'-', color=colors[prefix], 
-                        markersize=8, linewidth=1.5, label=f'Изображение {prefix}', alpha=0.8)
-        
-        plt.xlabel('Высота изображения (пиксели)', fontsize=12)
-        plt.ylabel('Количество обнаруженных объектов', fontsize=12)
-        plt.title('Зависимость количества детекций от высоты изображения', fontsize=14, fontweight='bold')
-        plt.legend(loc='best', fontsize=10)
-        plt.grid(True, alpha=0.3, linestyle='--')
-        plt.xscale('log', base=2)
-        plt.xticks([16, 32, 64, 128, 256, 512, 1024, 2048], 
-                   ['16', '32', '64', '128', '256', '512', '1024', '2048'])
-        plt.ylim(bottom=0)
-        
-        plt.tight_layout()
-        plt.savefig(Path(__file__).parent / 'plot_detections_vs_height_v2.png', dpi=300, bbox_inches='tight')
-        plt.show()
-        print("Сохранён: plot_detections_vs_height_v2.png")
-    
-    def plot_all_metrics(self):
-        """Сводный график: все метрики"""
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        
-        colors = {'1': 'blue', '2': 'green', '3': 'red'}
-        markers = {'1': 'o', '2': 's', '3': '^'}
-        
-        # Время
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                axes[0].plot(data['height'], data['avg_time_ms'], 
-                            markers[prefix]+'-', color=colors[prefix], 
-                            markersize=6, linewidth=1.5, label=f'Изобр. {prefix}')
-        axes[0].set_xlabel('Высота (пиксели)')
-        axes[0].set_ylabel('Время (мс)')
-        axes[0].set_title('Время обработки')
-        axes[0].set_xscale('log', base=2)
-        axes[0].grid(True, alpha=0.3)
-        axes[0].legend()
-        
-        # Уверенность
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                axes[1].plot(data['height'], data['avg_confidence'], 
-                            markers[prefix]+'-', color=colors[prefix], 
-                            markersize=6, linewidth=1.5, label=f'Изобр. {prefix}')
-        axes[1].set_xlabel('Высота (пиксели)')
-        axes[1].set_ylabel('Уверенность')
-        axes[1].set_title('Уверенность детекции')
-        axes[1].set_xscale('log', base=2)
-        axes[1].set_ylim(0, 1)
-        axes[1].grid(True, alpha=0.3)
-        axes[1].legend()
-        
-        # Детекции
-        for prefix in ['1', '2', '3']:
-            data = self.df_grouped[self.df_grouped['image_prefix'] == prefix]
-            if len(data) > 0:
-                axes[2].plot(data['height'], data['avg_detections'], 
-                            markers[prefix]+'-', color=colors[prefix], 
-                            markersize=6, linewidth=1.5, label=f'Изобр. {prefix}')
-        axes[2].set_xlabel('Высота (пиксели)')
-        axes[2].set_ylabel('Количество')
-        axes[2].set_title('Количество детекций')
-        axes[2].set_xscale('log', base=2)
-        axes[2].grid(True, alpha=0.3)
-        axes[2].legend()
-        
-        plt.suptitle('Сравнение метрик в зависимости от высоты изображения', fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(Path(__file__).parent / 'plot_all_metrics_v2.png', dpi=300, bbox_inches='tight')
-        plt.show()
-        print("Сохранён: plot_all_metrics_v2.png")
-    
-    def generate_latex_table(self, output_path="size_research_table_v2.tex"):
-        """Генерация LaTeX таблицы"""
-        # Усреднение по всем изображениям для каждого размера
-        df_summary = self.df_grouped.groupby('height').agg({
+        # Для усреднённого графика по всем изображениям
+        self.df_overall = self.df.groupby('height').agg({
             'avg_time_ms': 'mean',
             'std_time_ms': 'mean',
             'avg_confidence': 'mean',
+            'std_confidence': 'mean',
             'avg_detections': 'mean'
-        }).reset_index()
-        df_summary = df_summary.sort_values('height')
+        }).reset_index().sort_values('height')
         
-        with open(Path(__file__).parent / output_path, 'w', encoding='utf-8') as f:
-            f.write("\\begin{table}[H]\n")
-            f.write("\\centering\n")
-            f.write("\\caption{Зависимость производительности от высоты изображения}\n")
-            f.write("\\label{tab:size_research_v2}\n")
-            f.write("\\begin{tabular}{|c|c|c|c|c|}\n")
-            f.write("\\hline\n")
-            f.write("\\textbf{Высота (пкс)} & \\textbf{Размер (Мп)} & \\textbf{Время (мс)} & \\textbf{Уверенность} & \\textbf{Детекций} \\\\\n")
-            f.write("\\hline\n")
-            
-            for _, row in df_summary.iterrows():
-                height = int(row['height'])
-                pixels_mp = height * (height * 2) / 1e6 if height <= 64 else height * (height * 2) / 1e6
-                f.write(f"{height} & {pixels_mp:.2e} & ")
-                f.write(f"{row['avg_time_ms']:.1f} $\\pm$ {row['std_time_ms']:.1f} & ")
-                f.write(f"{row['avg_confidence']:.3f} & ")
-                f.write(f"{row['avg_detections']:.0f} \\\\\n")
-                f.write("\\hline\n")
-            
-            f.write("\\end{tabular}\n")
-            f.write("\\end{table}\n")
+        print(f"Уникальных размеров по высоте: {len(self.df_overall)}")
+        print(f"Диапазон высот: {self.df_overall['height'].min()} - {self.df_overall['height'].max()}")
+    
+    def get_colors_and_markers(self, num_prefixes):
+        """Генерация цветов и маркеров для большого количества префиксов"""
+        base_colors = [
+            'blue', 'green', 'red', 'purple', 'orange', 
+            'brown', 'pink', 'gray', 'olive', 'cyan',
+            'navy', 'darkgreen', 'crimson', 'indigo', 'gold',
+            'teal', 'salmon', 'royalblue', 'orchid', 'slategray'
+        ]
+        base_markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 
+                        'H', '+', 'x', 'd', '|', '_', 'P', 'X', '8', '1']
         
-        print(f"LaTeX таблица сохранена в {output_path}")
+        colors = {}
+        markers = {}
+        for i, prefix in enumerate(self.all_prefixes):
+            colors[prefix] = base_colors[i % len(base_colors)]
+            markers[prefix] = base_markers[i % len(base_markers)]
+        
+        return colors, markers
+    
+    def plot_all_summary(self):
+        """Сводный график усреднённых данных"""
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        x = self.df_overall['height'].values
+        
+        # 1. Время обработки
+        ax1 = axes[0, 0]
+        ax1.errorbar(x, self.df_overall['avg_time_ms'], 
+                    yerr=self.df_overall['std_time_ms'],
+                    fmt='o-', color='blue', capsize=3, markersize=4)
+        ax1.set_xlabel('Высота изображения (пиксели)')
+        ax1.set_ylabel('Время (мс)')
+        ax1.set_title('Время обработки')
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Уверенность
+        ax2 = axes[0, 1]
+        ax2.errorbar(x, self.df_overall['avg_confidence'], 
+                    yerr=self.df_overall['std_confidence'],
+                    fmt='o-', color='orange', capsize=3, markersize=4)
+        ax2.set_xlabel('Высота изображения (пиксели)')
+        ax2.set_ylabel('Уверенность')
+        ax2.set_title('Уверенность детекции')
+        ax2.set_ylim(0, 1)
+        ax2.grid(True, alpha=0.3)
+        
+        # 3. Количество детекций
+        ax3 = axes[1, 0]
+        ax3.errorbar(x, self.df_overall['avg_detections'], 
+                    yerr=self.df_overall['std_detections'],
+                    fmt='o-', color='green', capsize=3, markersize=4)
+        ax3.set_xlabel('Высота изображения (пиксели)')
+        ax3.set_ylabel('Количество')
+        ax3.set_title('Количество детекций')
+        ax3.grid(True, alpha=0.3)
+        
+        # 4. Соотношение время/уверенность
+        ax4 = axes[1, 1]
+        scatter = ax4.scatter(self.df_overall['avg_time_ms'], 
+                             self.df_overall['avg_confidence'],
+                             c=x, cmap='viridis', s=50, alpha=0.7)
+        ax4.set_xlabel('Время обработки (мс)')
+        ax4.set_ylabel('Уверенность')
+        ax4.set_title('Время vs Уверенность (цвет = высота)')
+        ax4.grid(True, alpha=0.3)
+        cbar = plt.colorbar(scatter, ax=ax4)
+        cbar.set_label('Высота (пиксели)')
+        
+        plt.suptitle(f'Сводная статистика (усреднённо по {len(self.all_prefixes)} изображениям)', 
+                    fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(Path(__file__).parent / 'plot_all_summary.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        print("Сохранён: plot_all_summary.png")
+    
+    def generate_statistics(self):
+        """Генерация статистики по данным"""
+        print("\n" + "="*60)
+        print("СТАТИСТИКА ПО ДАННЫМ".center(60))
+        print("="*60)
+        
+        df = self.df_overall
+        
+        # Где максимальная уверенность
+        max_conf_idx = df['avg_confidence'].idxmax()
+        max_conf_height = df.loc[max_conf_idx, 'height']
+        max_conf_value = df.loc[max_conf_idx, 'avg_confidence']
+        
+        # Где минимальное время
+        min_time_idx = df['avg_time_ms'].idxmin()
+        min_time_height = df.loc[min_time_idx, 'height']
+        min_time_value = df.loc[min_time_idx, 'avg_time_ms']
+        
+        # Где максимальное количество детекций
+        max_det_idx = df['avg_detections'].idxmax()
+        max_det_height = df.loc[max_det_idx, 'height']
+        max_det_value = df.loc[max_det_idx, 'avg_detections']
+        
+        print(f"\n📊 Оптимальные значения (усреднённые по {len(self.all_prefixes)} изображениям):")
+        print(f"  • Максимальная уверенность: {max_conf_value:.3f} при высоте {max_conf_height:.0f}px")
+        print(f"  • Минимальное время обработки: {min_time_value:.1f} мс при высоте {min_time_height:.0f}px")
+        print(f"  • Максимальное количество детекций: {max_det_value:.0f} при высоте {max_det_height:.0f}px")
+        
+        # Статистика по уверенности
+        print(f"\n📊 Дополнительная статистика:")
+        print(f"  • Средняя уверенность по всем размерам: {df['avg_confidence'].mean():.3f} ± {df['avg_confidence'].std():.3f}")
+        print(f"  • Среднее время обработки: {df['avg_time_ms'].mean():.1f} ± {df['avg_time_ms'].std():.1f} мс")
+        print(f"  • Среднее количество детекций: {df['avg_detections'].mean():.1f} ± {df['avg_detections'].std():.1f}")
+        
+        return {
+            'max_confidence': (max_conf_height, max_conf_value),
+            'min_time': (min_time_height, min_time_value),
+            'max_detections': (max_det_height, max_det_value)
+        }
     
     def plot_all(self):
+        """Построение всех графиков"""
         print("\n" + "="*60)
         print("ПОСТРОЕНИЕ ГРАФИКОВ".center(60))
         print("="*60 + "\n")
         
-        self.plot_time_vs_height()
-        self.plot_confidence_vs_height()
-        self.plot_detections_vs_height()
-        self.plot_all_metrics()
+        self.plot_all_summary()
+        self.generate_statistics()
         
         print("\n" + "="*60)
         print("ВСЕ ГРАФИКИ УСПЕШНО ПОСТРОЕНЫ".center(60))
@@ -363,13 +343,14 @@ class ResultsPlotter:
 
 
 def main():
-    # Путь к модели YOLOv12
-    MODEL_PATH = Path(__file__).parent / "yolo12" / "runs" / "train" / "weights" / "best.pt"
+    # Поиск модели
+    MODEL_PATH = DETECTORS_DIR / "yolo12" / "runs" / "train" / "weights" / "best.pt"
     
     if not MODEL_PATH.exists():
         alt_paths = [
-            Path("C:/sem8/VKR/DIPLOM_SRC/runs/detect/train/weights/best.pt"),
-            Path(__file__).parent.parent / "runs" / "detect" / "train" / "weights" / "best.pt",
+            RUNS_DIR / "detect" / "train" / "weights" / "best.pt",
+            REPO_ROOT / "runs" / "detect" / "train" / "weights" / "best.pt",
+            Path(__file__).parent.parent.parent / "runs" / "detect" / "train" / "weights" / "best.pt",
         ]
         for p in alt_paths:
             if p.exists():
@@ -380,27 +361,48 @@ def main():
         print(f"Ошибка: модель не найдена")
         return
     
-    IMAGES_DIR = Path(__file__).parent / "test_diff_sizes_imgs"
+    print(f"Модель загружена: {MODEL_PATH}")
+    
+    # Папка с изображениями (где лежат подпапки height_*)
+    # Путь к корневой папке с изображениями
+    IMAGES_DIR = Path(__file__).parent / "test_diff_sizes_imgs_resized"
     
     if not IMAGES_DIR.exists():
-        print(f"Ошибка: папка {IMAGES_DIR} не найдена")
+        # Пробуем альтернативные пути
+        alt_images = [
+            Path(__file__).parent / "test_diff_sizes_imgs",
+            Path(__file__).parent.parent / "test_diff_sizes_imgs_resized",
+        ]
+        for p in alt_images:
+            if p.exists():
+                IMAGES_DIR = p
+                break
+    
+    if not IMAGES_DIR.exists():
+        print(f"Ошибка: папка с изображениями не найдена")
+        print(f"Искали в: {Path(__file__).parent / 'test_diff_sizes_imgs_resized'}")
         return
+    
+    print(f"Папка с изображениями: {IMAGES_DIR}")
+    
+    # Подсчёт количества изображений во всех подпапках
+    image_count = len(list(IMAGES_DIR.rglob("*.jpg"))) + len(list(IMAGES_DIR.rglob("*.png")))
+    print(f"Найдено изображений: {image_count}")
     
     # Запуск исследования
     researcher = YOLOv12SizeResearchV2(
         model_path=str(MODEL_PATH),
         images_dir=str(IMAGES_DIR),
-        num_runs=10,
-        warmup_runs=5
+        num_runs=3,      # 3 прогона для ускорения
+        warmup_runs=2    # 2 прогрева
     )
     
     researcher.run_research()
-    df = researcher.save_results_csv()
+    df = researcher.save_results_csv("yolo12_size_results_v2.csv")
     
     # Построение графиков
     plotter = ResultsPlotter("yolo12_size_results_v2.csv")
     plotter.plot_all()
-    plotter.generate_latex_table()
 
 
 if __name__ == "__main__":

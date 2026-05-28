@@ -14,19 +14,19 @@ from tqdm import tqdm
 from ultralytics import YOLO
 from torchmetrics.detection import MeanAveragePrecision
 
-_REPO_ROOT = Path("C:/sem8/VKR/DIPLOM_SRC")
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
-import dataset_yaml
+from slug_detection.paths import DATASET_DIR, DETECTORS_DIR, REPO_ROOT
 
 
 class YOLODetailedComparison:
     """Детальное сравнение YOLOv11, YOLOv12 и YOLOv26 с вариацией порога уверенности"""
     
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parents[2]
-        self.detectors_dir = self.project_root / "detectors"
+        self.project_root = REPO_ROOT
+        self.detectors_dir = DETECTORS_DIR
         
         # Пути к моделям
         self.yolo26_weights = self.detectors_dir / "yolo26" / "runs" / "train" / "weights" / "best.pt"
@@ -66,8 +66,8 @@ class YOLODetailedComparison:
     
     def get_test_data(self):
         """Get test images and labels"""
-        test_images_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/images/test")
-        test_labels_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/labels/test")
+        test_images_dir = DATASET_DIR / "images" / "test"
+        test_labels_dir = DATASET_DIR / "labels" / "test"
         
         if not test_images_dir.exists():
             print(f"Test images folder not found: {test_images_dir}")

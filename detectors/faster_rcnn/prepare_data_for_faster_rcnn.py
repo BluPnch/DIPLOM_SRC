@@ -6,11 +6,11 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
-import dataset_yaml  # noqa: E402 — после добавления корня проекта в sys.path
+from slug_detection.config import dataset
 
 FASTER_RCNN_DIR = Path(__file__).resolve().parent
 DEFAULT_COCO_DIR = FASTER_RCNN_DIR / "coco_dataset"
@@ -35,12 +35,12 @@ def convert_yolo_to_coco(data_yaml_path, output_dir=None):
         (output_dir / split / "images").mkdir(parents=True, exist_ok=True)
         (output_dir / split / "labels").mkdir(parents=True, exist_ok=True)
 
-    classes = dataset_yaml.class_names_from_cfg(data_cfg)
+    classes = dataset.class_names_from_cfg(data_cfg)
     total_images = 0
 
     for split in ["train", "val"]:
-        images_dir = dataset_yaml.resolve_split_images_dir(data_cfg, split, data_yaml_path)
-        labels_dir = dataset_yaml.yolo_labels_dir(images_dir, split)
+        images_dir = dataset.resolve_split_images_dir(data_cfg, split, data_yaml_path)
+        labels_dir = dataset.yolo_labels_dir(images_dir, split)
 
         if not images_dir.is_dir():
             print(
@@ -60,7 +60,7 @@ def convert_yolo_to_coco(data_yaml_path, output_dir=None):
         annotation_id = 1
         image_id = 1
 
-        image_paths = dataset_yaml.iter_image_paths(images_dir)
+        image_paths = dataset.iter_image_paths(images_dir)
         for img_path in image_paths:
             shutil.copy(img_path, output_dir / split / "images" / img_path.name)
 
@@ -126,4 +126,4 @@ def convert_yolo_to_coco(data_yaml_path, output_dir=None):
 
 
 if __name__ == "__main__":
-    convert_yolo_to_coco(dataset_yaml.find_data_yaml())
+    convert_yolo_to_coco(dataset.find_data_yaml())

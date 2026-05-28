@@ -17,20 +17,21 @@ from torchvision import transforms
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from slug_detection.paths import DATASET_DIR, DETECTORS_DIR, REPO_ROOT
 
 
 class FastDetailedComparator:
     """Детальное сравнение YOLOv12 и Faster R-CNN с мелкой сеткой порогов"""
     
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parents[2]
+        self.project_root = REPO_ROOT
         
-        # Пути к моделям
-        self.yolo12_path = Path("C:/sem8/VKR/DIPLOM_SRC/detectors/yolo12/runs/train/weights/best.pt")
-        self.frcnn_path = Path("C:/sem8/VKR/DIPLOM_SRC/detectors/faster_rcnn/faster_rcnn_best.pth")
+        self.yolo12_path = DETECTORS_DIR / "yolo12" / "runs" / "train" / "weights" / "best.pt"
+        self.frcnn_path = DETECTORS_DIR / "faster_rcnn" / "faster_rcnn_best.pth"
         
         # Мелкая сетка порогов: 0.01, 0.03, 0.05, ..., 0.99
         self.thresholds = np.arange(0.01, 1.0, 0.02)
@@ -48,8 +49,8 @@ class FastDetailedComparator:
         if self._test_images is not None:
             return self._test_images, self._labels_dir
         
-        test_images_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/images/test")
-        self._labels_dir = Path("C:/sem8/VKR/DIPLOM_SRC/dataset/labels/test")
+        test_images_dir = DATASET_DIR / "images" / "test"
+        self._labels_dir = DATASET_DIR / "labels" / "test"
         
         if not test_images_dir.exists():
             raise FileNotFoundError(f"Папка не найдена: {test_images_dir}")
@@ -83,7 +84,7 @@ class FastDetailedComparator:
         backbone.out_channels = 576
         
         anchor_generator = AnchorGenerator(
-            sizes=((32, 64, 128, 256, 512),),
+            sizes=((16, 32, 64, 128, 256),),
             aspect_ratios=((0.5, 1.0, 2.0),),
         )
         

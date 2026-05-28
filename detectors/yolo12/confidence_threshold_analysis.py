@@ -6,29 +6,28 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
-# Добавляем путь к проекту
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
-import dataset_yaml
+from slug_detection.paths import DETECTORS_DIR, REPO_ROOT
 
 
 class ConfidenceThresholdResearch:
     
     def __init__(self, model_path=None):
 
-        self.project_root = Path(__file__).resolve().parents[1]
-        self.research_dir = self.project_root / "research" / "confidence_study"
+        self.project_root = REPO_ROOT
+        self.research_dir = self.project_root / "investigation" / "yolo12" / "confidence_study"
         self.research_dir.mkdir(parents=True, exist_ok=True)
         
         # Загрузка модели
         if model_path is None:
             # Пробуем найти обученную модель YOLOv12
             possible_paths = [
-                self.project_root / "detectors" / "yolo12" / "runs" / "train" / "weights" / "best.pt",
-                self.project_root / "runs" / "detect" / "train" / "weights" / "best.pt",
-                self.project_root / "detectors" / "yolo26" / "runs" / "train" / "weights" / "best.pt",
+                DETECTORS_DIR / "yolo12" / "runs" / "train" / "weights" / "best.pt",
+                REPO_ROOT / "runs" / "detect" / "train" / "weights" / "best.pt",
+                DETECTORS_DIR / "yolo26" / "runs" / "train" / "weights" / "best.pt",
             ]
             for path in possible_paths:
                 if path.exists():

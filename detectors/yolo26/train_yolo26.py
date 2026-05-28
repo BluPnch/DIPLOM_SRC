@@ -7,18 +7,18 @@ from pathlib import Path
 import torch
 from ultralytics import YOLO
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
-import dataset_yaml  # noqa: E402
+from slug_detection.config import dataset
 
 if __name__ == "__main__":
-    data_yaml_path = dataset_yaml.find_data_yaml()
+    data_yaml_path = dataset.find_data_yaml()
     print(f"data.yaml: {data_yaml_path}")
 
     with tempfile.TemporaryDirectory(prefix="yolo_data_") as tmpd:
-        ultra_yaml = dataset_yaml.export_ultralytics_yaml_with_absolute_path(
+        ultra_yaml = dataset.export_ultralytics_yaml_with_absolute_path(
             data_yaml_path, Path(tmpd) / "data_abs_path.yaml"
         )
         print(f"Для обучения Ultralytics: абсолютный path в {ultra_yaml}")

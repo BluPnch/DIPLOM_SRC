@@ -2,10 +2,14 @@
 """Построение графиков по результатам сравнения моделей с эталонной линией"""
 
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Используем неинтерактивный бэкенд - графики не будут показываться, только сохраняться
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 from pathlib import Path
+import traceback
+import sys
 
 # Путь к файлу с результатами
 RESULTS_FILE = Path(__file__).parent / "comparison_results.csv"
@@ -57,6 +61,8 @@ class ResultsPlotter:
         
         print(f"Загружены данные YOLOv12: {len(self.yolo12_data)} записей")
         print(f"Загружены данные Faster R-CNN: {len(self.frcnn_data)} записей")
+        print(f"Диапазон порогов YOLOv12: {self.yolo12_data['threshold'].min():.3f} - {self.yolo12_data['threshold'].max():.3f}")
+        print(f"Диапазон Total_Detections YOLOv12: {self.yolo12_data['Total_Detections'].min()} - {self.yolo12_data['Total_Detections'].max()}")
     
     def smooth_curve(self, x, y, num_points=300):
         """Сглаживание кривой с помощью сплайн-интерполяции"""
@@ -65,7 +71,6 @@ class ResultsPlotter:
         if hasattr(y, 'values'):
             y = y.values
         
-        # НЕ обрезаем нулевые значения, оставляем все данные
         mask = ~np.isnan(y)
         x_clean = x[mask]
         y_clean = y[mask]
@@ -78,7 +83,8 @@ class ResultsPlotter:
         try:
             spline = UnivariateSpline(x_clean, y_clean, s=0.01 * len(x_clean))
             y_smooth = spline(x_smooth)
-        except:
+        except Exception as e:
+            print(f"    Ошибка сплайна: {e}, используем линейную интерполяцию")
             y_smooth = np.interp(x_smooth, x_clean, y_clean)
         
         return x_smooth, y_smooth
@@ -95,259 +101,307 @@ class ResultsPlotter:
     
     def plot_detections_comparison(self):
         """График: Количество детекций vs порог с эталонной линией"""
-        fig, ax = plt.subplots(figsize=(12, 7))
-        
-        # Эталонная линия
-        ax.axhline(y=GROUND_TRUTH_DETECTIONS, 
-                   color=GROUND_TRUTH_COLOR, 
-                   linestyle=GROUND_TRUTH_LINESTYLE, 
-                   linewidth=GROUND_TRUTH_LINEWIDTH,
-                   label=f'Эталон ({GROUND_TRUTH_DETECTIONS} объектов)')
-        
-        intersections = []
-        all_x_intersects = []
-        
-        # YOLOv12
-        if self.yolo12_data is not None and len(self.yolo12_data) > 0:
-            x = self.yolo12_data['threshold']
-            y = self.yolo12_data['Total_Detections']
-            style = MODEL_STYLES['YOLOv12']
+        print("  Построение графика количества детекций...")
+        try:
+            fig, ax = plt.subplots(figsize=(12, 7))
             
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            ax.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
+            ax.axhline(y=GROUND_TRUTH_DETECTIONS, 
+                    color=GROUND_TRUTH_COLOR, 
+                    linestyle=GROUND_TRUTH_LINESTYLE, 
+                    linewidth=GROUND_TRUTH_LINEWIDTH,
+                    label=f'Эталон ({GROUND_TRUTH_DETECTIONS} объектов)')
             
-            x_int = self.find_intersection_point(x_smooth, y_smooth, GROUND_TRUTH_DETECTIONS)
-            if x_int is not None and 0 <= x_int <= 1:
-                intersections.append(('YOLOv12', x_int))
-                all_x_intersects.append(x_int)
-                ax.plot(x_int, GROUND_TRUTH_DETECTIONS, 'o', color=style['color'], markersize=8, markeredgecolor='black')
-        
-        # Faster R-CNN
-        if self.frcnn_data is not None and len(self.frcnn_data) > 0:
-            x = self.frcnn_data['threshold']
-            y = self.frcnn_data['Total_Detections']
-            style = MODEL_STYLES['Faster R-CNN']
+            intersections = []
+            all_x_intersects = []
             
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            ax.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
+            if self.yolo12_data is not None and len(self.yolo12_data) > 0:
+                x = self.yolo12_data['threshold']
+                y = self.yolo12_data['Total_Detections']
+                style = MODEL_STYLES['YOLOv12']
+                
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                ax.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+                
+                x_int = self.find_intersection_point(x_smooth, y_smooth, GROUND_TRUTH_DETECTIONS)
+                if x_int is not None and 0 <= x_int <= 1:
+                    intersections.append(('YOLOv12', x_int))
+                    all_x_intersects.append(x_int)
+                    ax.plot(x_int, GROUND_TRUTH_DETECTIONS, 'o', color=style['color'], markersize=8, markeredgecolor='black')
+                    print(f"    YOLOv12: пересечение при пороге {x_int:.4f}")
             
-            x_int = self.find_intersection_point(x_smooth, y_smooth, GROUND_TRUTH_DETECTIONS)
-            if x_int is not None and 0 <= x_int <= 1:
-                intersections.append(('Faster R-CNN', x_int))
-                all_x_intersects.append(x_int)
-                ax.plot(x_int, GROUND_TRUTH_DETECTIONS, 's', color=style['color'], markersize=8, markeredgecolor='black')
-        
-        ax.set_xlabel('Порог уверенности', fontsize=12)
-        ax.set_ylabel('Количество обнаруженных объектов', fontsize=12)
-        ax.set_title('Сравнение количества обнаруженных объектов с эталоном', fontsize=14, fontweight='bold')
-        ax.legend(loc='best', frameon=True)
-        ax.grid(True, alpha=0.3, linestyle=':')
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 700)
-        
-        # Вертикальные линии для пересечений
-        for name, x_int in intersections:
-            ax.axvline(x=x_int, color='gray', linestyle=':', linewidth=1.5, alpha=0.7)
-        
-        # Настройка подписей на оси X (добавляем пороги пересечения)
-        current_xticks = list(ax.get_xticks())
-        for x_int in all_x_intersects:
-            if x_int not in current_xticks:
-                current_xticks.append(x_int)
-        current_xticks = sorted(current_xticks)
-        
-        # Формируем подписи
-        xtick_labels = []
-        for val in current_xticks:
-            if val in all_x_intersects:
-                # Для порогов пересечения делаем подпись с названием модели
-                names = [name for name, x in intersections if abs(x - val) < 0.01]
-                if names:
-                    xtick_labels.append(f'{val:.2f}\n({names[0]})')
+            if self.frcnn_data is not None and len(self.frcnn_data) > 0:
+                x = self.frcnn_data['threshold']
+                y = self.frcnn_data['Total_Detections']
+                style = MODEL_STYLES['Faster R-CNN']
+                
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                ax.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+                
+                x_int = self.find_intersection_point(x_smooth, y_smooth, GROUND_TRUTH_DETECTIONS)
+                if x_int is not None and 0 <= x_int <= 1:
+                    intersections.append(('Faster R-CNN', x_int))
+                    all_x_intersects.append(x_int)
+                    ax.plot(x_int, GROUND_TRUTH_DETECTIONS, 's', color=style['color'], markersize=8, markeredgecolor='black')
+                    print(f"    Faster R-CNN: пересечение при пороге {x_int:.4f}")
+            
+            ax.set_xlabel('Порог уверенности', fontsize=14)
+            ax.set_ylabel('Количество обнаруженных объектов', fontsize=14)
+            ax.set_title('Сравнение количества обнаруженных объектов с эталоном', fontsize=16, fontweight='bold')
+            ax.legend(loc='best', frameon=True)
+            ax.grid(True, alpha=0.3, linestyle=':')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 700)
+            
+            for name, x_int in intersections:
+                ax.axvline(x=x_int, color='gray', linestyle=':', linewidth=1.5, alpha=0.7)
+            
+            current_xticks = list(ax.get_xticks())
+            for x_int in all_x_intersects:
+                if x_int not in current_xticks:
+                    current_xticks.append(x_int)
+            current_xticks = sorted(current_xticks)
+            
+            # Словарь для смещения подписей на оси X
+            label_offset_map = {
+                'YOLOv12': -0.015,      # смещаем левее
+                'Faster R-CNN': 0.0     # без смещения
+            }
+            
+            xtick_labels = []
+            tick_positions = []
+            
+            for val in current_xticks:
+                if val in all_x_intersects:
+                    names = [name for name, x in intersections if abs(x - val) < 0.01]
+                    if names:
+                        name = names[0]
+                        offset = label_offset_map.get(name, 0)
+                        new_pos = val + offset
+                        
+                        if 0 <= new_pos <= 1:
+                            tick_positions.append(new_pos)
+                        else:
+                            tick_positions.append(val)
+                        xtick_labels.append(f'{val:.2f}\n({name})')
+                    else:
+                        tick_positions.append(val)
+                        xtick_labels.append(f'{val:.2f}')
                 else:
+                    tick_positions.append(val)
                     xtick_labels.append(f'{val:.2f}')
-            else:
-                xtick_labels.append(f'{val:.2f}')
-        
-        ax.set_xticks(current_xticks)
-        ax.set_xticklabels(xtick_labels, fontsize=9)
-        
-        # Подсветка подписей для порогов пересечения
-        for tick, val in zip(ax.get_xticklabels(), current_xticks):
-            if val in all_x_intersects:
-                tick.set_color('red')
-                tick.set_fontweight('bold')
-        
-        plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_detections_comparison.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
-        print(f"Сохранён: {output_path}")
+            
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(xtick_labels, fontsize=14)
+            
+            # Подсветка подписей (исправлено: используем tick_positions, а не get_xticklabels)
+            for i, tick_pos in enumerate(tick_positions):
+                for name, x_int in intersections:
+                    offset = label_offset_map.get(name, 0)
+                    original_pos_with_offset = x_int + offset
+                    if abs(tick_pos - original_pos_with_offset) < 0.01:
+                        # Получаем текст подписи и меняем её цвет
+                        tick_label = ax.get_xticklabels()[i]
+                        tick_label.set_color(MODEL_STYLES[name]['color'])
+                        tick_label.set_fontweight('bold')
+                        break
+            
+            plt.tight_layout()
+            output_path = RESULTS_FILE.parent / 'plot_detections_comparison.png'
+            plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Сохранён: {output_path}")
+            return True
+        except Exception as e:
+            print(f"  ОШИБКА при построении графика детекций: {e}")
+            traceback.print_exc()
+            return False
     
     def plot_fps_comparison(self):
         """График: Сравнение FPS YOLOv12 и Faster R-CNN"""
-        plt.figure(figsize=(10, 6))
-        
-        if self.yolo12_data is not None and len(self.yolo12_data) > 0:
-            x = self.yolo12_data['threshold']
-            y = self.yolo12_data['FPS']
-            style = MODEL_STYLES['YOLOv12']
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            plt.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
-        
-        if self.frcnn_data is not None and len(self.frcnn_data) > 0:
-            x = self.frcnn_data['threshold']
-            y = self.frcnn_data['FPS']
-            style = MODEL_STYLES['Faster R-CNN']
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            plt.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
-        
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('FPS', fontsize=12)
-        plt.title('Сравнение скорости обработки', fontsize=14, fontweight='bold')
-        plt.legend(loc='best', frameon=True)
-        plt.grid(True, alpha=0.3, linestyle=':')
-        plt.xlim(0, 1)
-        
-        plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_fps_comparison.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
-        print(f"Сохранён: {output_path}")
+        print("  Построение графика FPS...")
+        try:
+            fig = plt.figure(figsize=(10, 6))
+            
+            if self.yolo12_data is not None and len(self.yolo12_data) > 0:
+                x = self.yolo12_data['threshold']
+                y = self.yolo12_data['FPS']
+                style = MODEL_STYLES['YOLOv12']
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                plt.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+            
+            if self.frcnn_data is not None and len(self.frcnn_data) > 0:
+                x = self.frcnn_data['threshold']
+                y = self.frcnn_data['FPS']
+                style = MODEL_STYLES['Faster R-CNN']
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                plt.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+            
+            plt.xlabel('Порог уверенности', fontsize=14)
+            plt.ylabel('FPS', fontsize=14)
+            plt.title('Сравнение скорости обработки', fontsize=16, fontweight='bold')
+            plt.legend(loc='best', frameon=True)
+            plt.grid(True, alpha=0.3, linestyle=':')
+            plt.xlim(0, 1)
+            
+            plt.tight_layout()
+            output_path = RESULTS_FILE.parent / 'plot_fps_comparison.png'
+            plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Сохранён: {output_path}")
+            return True
+        except Exception as e:
+            print(f"  ОШИБКА при построении графика FPS: {e}")
+            traceback.print_exc()
+            return False
     
     def plot_yolo12_all_metrics(self):
         """График: Все метрики точности YOLOv12 на одном графике"""
-        plt.figure(figsize=(10, 6))
-        
-        if self.yolo12_data is None or len(self.yolo12_data) == 0:
-            print("Нет данных YOLOv12")
-            return
-        
-        x = self.yolo12_data['threshold']
-        
-        # mAP@0.5
-        y1 = self.yolo12_data['mAP@0.5']
-        x_smooth, y_smooth = self.smooth_curve(x, y1)
-        plt.plot(x_smooth, y_smooth, '-', linewidth=2.5, label='mAP@0.5', color='#E69F00')
-        
-        # mAP@0.5:0.95
-        y2 = self.yolo12_data['mAP@0.5:0.95']
-        x_smooth, y_smooth = self.smooth_curve(x, y2)
-        plt.plot(x_smooth, y_smooth, '--', linewidth=2.5, label='mAP@0.5:0.95', color='#56B4E9')
-        
-        # Recall@100
-        y3 = self.yolo12_data['Recall@100']
-        x_smooth, y_smooth = self.smooth_curve(x, y3)
-        plt.plot(x_smooth, y_smooth, '-.', linewidth=2.5, label='Recall@100', color='#009E73')
-        
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('Значение (%)', fontsize=12)
-        plt.title('Точность детекции YOLOv12', fontsize=14, fontweight='bold')
-        plt.legend(loc='best', frameon=True)
-        plt.grid(True, alpha=0.3, linestyle=':')
-        plt.xlim(0, 1)
-        plt.ylim(0, 100)
-        
-        plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_yolo12_all_metrics.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
-        print(f"Сохранён: {output_path}")
+        print("  Построение графика метрик YOLOv12...")
+        try:
+            fig = plt.figure(figsize=(10, 6))
+            
+            if self.yolo12_data is None or len(self.yolo12_data) == 0:
+                print("Нет данных YOLOv12")
+                return False
+            
+            x = self.yolo12_data['threshold']
+            
+            y1 = self.yolo12_data['mAP@0.5']
+            x_smooth, y_smooth = self.smooth_curve(x, y1)
+            plt.plot(x_smooth, y_smooth, '-', linewidth=2.5, label='mAP@0.5', color='#E69F00')
+            
+            y2 = self.yolo12_data['mAP@0.5:0.95']
+            x_smooth, y_smooth = self.smooth_curve(x, y2)
+            plt.plot(x_smooth, y_smooth, '--', linewidth=2.5, label='mAP@0.5:0.95', color='#56B4E9')
+            
+            y3 = self.yolo12_data['Recall@100']
+            x_smooth, y_smooth = self.smooth_curve(x, y3)
+            plt.plot(x_smooth, y_smooth, '-.', linewidth=2.5, label='Recall@100', color='#009E73')
+            
+            plt.xlabel('Порог уверенности', fontsize=14)
+            plt.ylabel('Значение (%)', fontsize=14)
+            plt.title('Точность детекции YOLOv12', fontsize=16, fontweight='bold')
+            plt.legend(loc='best', frameon=True)
+            plt.grid(True, alpha=0.3, linestyle=':')
+            plt.xlim(0, 1)
+            plt.ylim(0, 100)
+            
+            plt.tight_layout()
+            output_path = RESULTS_FILE.parent / 'plot_yolo12_all_metrics.png'
+            plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Сохранён: {output_path}")
+            return True
+        except Exception as e:
+            print(f"  ОШИБКА при построении графика метрик YOLOv12: {e}")
+            traceback.print_exc()
+            return False
     
     def plot_frcnn_all_metrics(self):
         """График: Все метрики точности Faster R-CNN на одном графике"""
-        plt.figure(figsize=(10, 6))
-        
-        if self.frcnn_data is None or len(self.frcnn_data) == 0:
-            print("Нет данных Faster R-CNN")
-            return
-        
-        x = self.frcnn_data['threshold']
-        
-        # mAP@0.5
-        y1 = self.frcnn_data['mAP@0.5']
-        x_smooth, y_smooth = self.smooth_curve(x, y1)
-        plt.plot(x_smooth, y_smooth, '-', linewidth=2.5, label='mAP@0.5', color='#E69F00')
-        
-        # mAP@0.5:0.95
-        y2 = self.frcnn_data['mAP@0.5:0.95']
-        x_smooth, y_smooth = self.smooth_curve(x, y2)
-        plt.plot(x_smooth, y_smooth, '--', linewidth=2.5, label='mAP@0.5:0.95', color='#56B4E9')
-        
-        # Recall@100
-        y3 = self.frcnn_data['Recall@100']
-        x_smooth, y_smooth = self.smooth_curve(x, y3)
-        plt.plot(x_smooth, y_smooth, '-.', linewidth=2.5, label='Recall@100', color='#009E73')
-        
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('Значение (%)', fontsize=12)
-        plt.title('Точность детекции Faster R-CNN', fontsize=14, fontweight='bold')
-        plt.legend(loc='best', frameon=True)
-        plt.grid(True, alpha=0.3, linestyle=':')
-        plt.xlim(0, 1)
-        plt.ylim(0, 100)
-        
-        plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_frcnn_all_metrics.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
-        print(f"Сохранён: {output_path}")
+        print("  Построение графика метрик Faster R-CNN...")
+        try:
+            fig = plt.figure(figsize=(10, 6))
+            
+            if self.frcnn_data is None or len(self.frcnn_data) == 0:
+                print("Нет данных Faster R-CNN")
+                return False
+            
+            x = self.frcnn_data['threshold']
+            
+            y1 = self.frcnn_data['mAP@0.5']
+            x_smooth, y_smooth = self.smooth_curve(x, y1)
+            plt.plot(x_smooth, y_smooth, '-', linewidth=2.5, label='mAP@0.5', color='#E69F00')
+            
+            y2 = self.frcnn_data['mAP@0.5:0.95']
+            x_smooth, y_smooth = self.smooth_curve(x, y2)
+            plt.plot(x_smooth, y_smooth, '--', linewidth=2.5, label='mAP@0.5:0.95', color='#56B4E9')
+            
+            y3 = self.frcnn_data['Recall@100']
+            x_smooth, y_smooth = self.smooth_curve(x, y3)
+            plt.plot(x_smooth, y_smooth, '-.', linewidth=2.5, label='Recall@100', color='#009E73')
+            
+            plt.xlabel('Порог уверенности', fontsize=14)
+            plt.ylabel('Значение (%)', fontsize=14)
+            plt.title('Точность детекции Faster R-CNN', fontsize=16, fontweight='bold')
+            plt.legend(loc='best', frameon=True)
+            plt.grid(True, alpha=0.3, linestyle=':')
+            plt.xlim(0, 1)
+            plt.ylim(0, 100)
+            
+            plt.tight_layout()
+            output_path = RESULTS_FILE.parent / 'plot_frcnn_all_metrics.png'
+            plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Сохранён: {output_path}")
+            return True
+        except Exception as e:
+            print(f"  ОШИБКА при построении графика метрик Faster R-CNN: {e}")
+            traceback.print_exc()
+            return False
     
     def plot_map_comparison(self):
         """График: Сравнение mAP@0.5 YOLOv12 и Faster R-CNN"""
-        plt.figure(figsize=(10, 6))
-        
-        if self.yolo12_data is not None and len(self.yolo12_data) > 0:
-            x = self.yolo12_data['threshold']
-            y = self.yolo12_data['mAP@0.5']
-            style = MODEL_STYLES['YOLOv12']
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            plt.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
-        
-        if self.frcnn_data is not None and len(self.frcnn_data) > 0:
-            x = self.frcnn_data['threshold']
-            y = self.frcnn_data['mAP@0.5']
-            style = MODEL_STYLES['Faster R-CNN']
-            x_smooth, y_smooth = self.smooth_curve(x, y)
-            plt.plot(x_smooth, y_smooth, 
-                    color=style['color'],
-                    linestyle=style['linestyle'],
-                    linewidth=style['linewidth'],
-                    label=style['label'])
-        
-        plt.xlabel('Порог уверенности', fontsize=12)
-        plt.ylabel('mAP@0.5 (%)', fontsize=12)
-        plt.title('Сравнение точности детекции', fontsize=14, fontweight='bold')
-        plt.legend(loc='best', frameon=True)
-        plt.grid(True, alpha=0.3, linestyle=':')
-        plt.xlim(0, 1)
-        plt.ylim(0, 100)
-        
-        plt.tight_layout()
-        output_path = RESULTS_FILE.parent / 'plot_map_comparison.png'
-        plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
-        plt.show()
-        print(f"Сохранён: {output_path}")
+        print("  Построение графика сравнения mAP...")
+        try:
+            fig = plt.figure(figsize=(10, 6))
+            
+            if self.yolo12_data is not None and len(self.yolo12_data) > 0:
+                x = self.yolo12_data['threshold']
+                y = self.yolo12_data['mAP@0.5']
+                style = MODEL_STYLES['YOLOv12']
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                plt.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+            
+            if self.frcnn_data is not None and len(self.frcnn_data) > 0:
+                x = self.frcnn_data['threshold']
+                y = self.frcnn_data['mAP@0.5']
+                style = MODEL_STYLES['Faster R-CNN']
+                x_smooth, y_smooth = self.smooth_curve(x, y)
+                plt.plot(x_smooth, y_smooth, 
+                        color=style['color'],
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=style['label'])
+            
+            plt.xlabel('Порог уверенности', fontsize=14)
+            plt.ylabel('mAP@0.5 (%)', fontsize=14)
+            plt.title('Сравнение точности детекции', fontsize=16, fontweight='bold')
+            plt.legend(loc='best', frameon=True)
+            plt.grid(True, alpha=0.3, linestyle=':')
+            plt.xlim(0, 1)
+            plt.ylim(0, 100)
+            
+            plt.tight_layout()
+            output_path = RESULTS_FILE.parent / 'plot_map_comparison.png'
+            plt.savefig(str(output_path), dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Сохранён: {output_path}")
+            return True
+        except Exception as e:
+            print(f"  ОШИБКА при построении графика сравнения mAP: {e}")
+            traceback.print_exc()
+            return False
     
     def plot_all(self):
         """Построение всех графиков"""
@@ -355,17 +409,34 @@ class ResultsPlotter:
         print("ПОСТРОЕНИЕ ГРАФИКОВ".center(60))
         print("="*60 + "\n")
         
-        self.plot_detections_comparison()
-        self.plot_fps_comparison()
-        self.plot_yolo12_all_metrics()
-        self.plot_frcnn_all_metrics()
-        self.plot_map_comparison()
+        results = []
+        results.append(self.plot_detections_comparison())
+        results.append(self.plot_fps_comparison())
+        results.append(self.plot_yolo12_all_metrics())
+        results.append(self.plot_frcnn_all_metrics())
+        results.append(self.plot_map_comparison())
         
         print("\n" + "="*60)
-        print("ВСЕ ГРАФИКИ УСПЕШНО ПОСТРОЕНЫ".center(60))
+        success_count = sum(results)
+        print(f"УСПЕШНО ПОСТРОЕНО {success_count} ИЗ {len(results)} ГРАФИКОВ".center(60))
         print("="*60)
 
 
 if __name__ == "__main__":
-    plotter = ResultsPlotter()
-    plotter.plot_all()
+    try:
+        print("Запуск скрипта...")
+        print(f"Используется бэкенд: {matplotlib.get_backend()}")
+        plotter = ResultsPlotter()
+        plotter.plot_all()
+        print(f"\nГрафики сохранены в папку: {RESULTS_FILE.parent}")
+        print("Файлы:")
+        print("  - plot_detections_comparison.png")
+        print("  - plot_fps_comparison.png")
+        print("  - plot_yolo12_all_metrics.png")
+        print("  - plot_frcnn_all_metrics.png")
+        print("  - plot_map_comparison.png")
+    except Exception as e:
+        print(f"\nОШИБКА: {e}")
+        traceback.print_exc()
+    
+    input("\nНажмите Enter для выхода...")
